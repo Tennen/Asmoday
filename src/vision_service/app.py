@@ -5,7 +5,8 @@ from fastapi import FastAPI
 
 from vision_service.api import router
 from vision_service.container import ServiceContainer
-from vision_service.runtime import RuntimeManager
+from vision_service.gateway import GatewayCallbackClient
+from vision_service.runtime.manager import RuntimeManager
 from vision_service.settings import get_settings
 from vision_service.vision import VisionBackend
 
@@ -16,7 +17,10 @@ async def lifespan(app: FastAPI):
     container = ServiceContainer(
         settings=settings,
         backend=VisionBackend(settings),
-        manager=RuntimeManager(settings),
+        manager=RuntimeManager(
+            settings=settings,
+            gateway_client=GatewayCallbackClient(settings),
+        ),
     )
     app.state.container = container
 

@@ -1,3 +1,1 @@
-from vision_service.runtime.manager import RuntimeManager
-
-__all__ = ["RuntimeManager"]
+"""Runtime package for worker orchestration and dwell-state tracking."""
