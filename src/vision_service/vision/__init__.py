@@ -1,3 +1,1 @@
-from vision_service.vision.backend import VisionBackend
-
-__all__ = ["VisionBackend"]
+"""Vision package for model inference and RTSP processing."""

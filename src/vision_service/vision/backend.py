@@ -1,8 +1,15 @@
 import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 from vision_service.contracts import CatalogResponse, EntityDescriptor
 from vision_service.settings import Settings
+
+
+@dataclass(slots=True, frozen=True)
+class DetectionBatch:
+    detections: Any
+    labels: dict[int, str]
 
 
 class VisionBackend:
@@ -27,6 +34,17 @@ class VisionBackend:
             model_name=self._settings.model_path,
         )
 
+    async def detect(self, frame: Any) -> DetectionBatch:
+        model = await self._get_model()
+        result = await asyncio.to_thread(self._predict, model, frame)
+
+        import supervision as sv
+
+        return DetectionBatch(
+            detections=sv.Detections.from_ultralytics(result),
+            labels=self._iter_model_names(model),
+        )
+
     async def _get_model(self) -> Any:
         async with self._lock:
             if self._model is None:
@@ -37,6 +55,17 @@ class VisionBackend:
         from ultralytics import YOLO
 
         return YOLO(self._settings.model_path)
+
+    def _predict(self, model: Any, frame: Any) -> Any:
+        results = model.predict(
+            source=frame,
+            conf=self._settings.model_confidence_threshold,
+            device=self._settings.model_device,
+            verbose=False,
+        )
+        if not results:
+            raise RuntimeError("model returned no detection results")
+        return results[0]
 
     @staticmethod
     def _iter_model_names(model: Any) -> dict[int, str]:

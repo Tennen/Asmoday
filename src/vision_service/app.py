@@ -8,18 +8,22 @@ from vision_service.container import ServiceContainer
 from vision_service.gateway import GatewayCallbackClient
 from vision_service.runtime.manager import RuntimeManager
 from vision_service.settings import get_settings
-from vision_service.vision import VisionBackend
+from vision_service.vision.backend import VisionBackend
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    backend = VisionBackend(settings)
+    gateway_client = GatewayCallbackClient(settings)
     container = ServiceContainer(
         settings=settings,
-        backend=VisionBackend(settings),
+        backend=backend,
+        gateway_client=gateway_client,
         manager=RuntimeManager(
             settings=settings,
-            gateway_client=GatewayCallbackClient(settings),
+            gateway_client=gateway_client,
+            backend=backend,
         ),
     )
     app.state.container = container
