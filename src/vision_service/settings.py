@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,6 +31,9 @@ class Settings(BaseSettings):
     callback_max_attempts: int = Field(default=3, ge=1)
     callback_retry_backoff_seconds: float = Field(default=1.0, gt=0)
     status_interval_seconds: float = Field(default=30.0, gt=0)
+    rtsp_transport: Literal["tcp", "udp"] = "tcp"
+    rtsp_open_timeout_msec: int = Field(default=10_000, ge=1)
+    rtsp_read_timeout_msec: int = Field(default=10_000, ge=1)
 
     model_directory: Path = Field(
         default_factory=_default_model_directory,

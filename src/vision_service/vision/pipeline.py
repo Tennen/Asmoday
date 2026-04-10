@@ -10,6 +10,7 @@ from vision_service.runtime.dwell import DwellTransition, RuleDwellTracker
 from vision_service.runtime.events import EventEvidence, RuleEvent
 from vision_service.settings import Settings
 from vision_service.vision.backend import DetectionBatch, VisionBackend
+from vision_service.vision.capture import open_rtsp_capture
 
 WorkerState = Literal["starting", "running", "stopped", "degraded"]
 EmitRuleEvent = Callable[[RuleEvent], Awaitable[str]]
@@ -91,14 +92,18 @@ class RuleVisionWorker:
             self._state = "stopped"
 
     async def _run(self) -> None:
-        import cv2
         import supervision as sv
 
-        capture = await asyncio.to_thread(cv2.VideoCapture, self._rule.rtsp_source.url)
+        capture = await asyncio.to_thread(
+            open_rtsp_capture,
+            url=self._rule.rtsp_source.url,
+            settings=self._settings,
+        )
         if not capture.isOpened():
             capture.release()
             raise RuntimeError(
-                f"unable to open RTSP stream for rule {self._rule.id}"
+                "unable to open RTSP stream for "
+                f"rule {self._rule.id} with rtsp_transport={self._settings.rtsp_transport}"
             )
 
         tracker = sv.ByteTrack(
@@ -117,7 +122,10 @@ class RuleVisionWorker:
                 observed_at = datetime.now(tz=UTC)
 
                 if not success:
-                    self._last_error = "failed to read frame from RTSP stream"
+                    self._last_error = (
+                        "failed to read frame from RTSP stream with "
+                        f"rtsp_transport={self._settings.rtsp_transport}"
+                    )
                     transition = dwell_tracker.observe(
                         observed_at=observed_at,
                         visible_tracks={},

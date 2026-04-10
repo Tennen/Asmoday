@@ -39,6 +39,12 @@ The service defaults to the repository-level `models/` directory and picks the o
 
 - `VISION_SERVICE_GATEWAY_BASE_URL`
   Base URL for Gateway callback delivery.
+- `VISION_SERVICE_RTSP_TRANSPORT`
+  RTSP lower transport for OpenCV FFmpeg capture. Defaults to `tcp` because the camera stream is noticeably more loss-sensitive over `udp`.
+- `VISION_SERVICE_RTSP_OPEN_TIMEOUT_MSEC`
+  Open timeout passed to `cv2.VideoCapture(...)`.
+- `VISION_SERVICE_RTSP_READ_TIMEOUT_MSEC`
+  Read timeout passed to `cv2.VideoCapture(...)`.
 - `VISION_SERVICE_MODEL_PATH`
   Optional model directory path for backward compatibility. If unset, the service uses `./models`.
 - `VISION_SERVICE_MODEL_DIRECTORY`
