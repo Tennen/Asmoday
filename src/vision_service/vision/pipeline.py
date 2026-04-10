@@ -10,7 +10,7 @@ from vision_service.runtime.dwell import DwellTransition, RuleDwellTracker
 from vision_service.runtime.events import EventEvidence, RuleEvent
 from vision_service.settings import Settings
 from vision_service.vision.backend import DetectionBatch, VisionBackend
-from vision_service.vision.capture import open_rtsp_capture
+from vision_service.vision.stream import FrameStream, StreamReadResult
 
 WorkerState = Literal["starting", "running", "stopped", "degraded"]
 EmitRuleEvent = Callable[[RuleEvent], Awaitable[str]]
@@ -35,11 +35,13 @@ class RuleVisionWorker:
         backend: VisionBackend,
         settings: Settings,
         emit_rule_event: EmitRuleEvent,
+        frame_stream: FrameStream,
     ) -> None:
         self._rule = rule.model_copy(deep=True)
         self._backend = backend
         self._settings = settings
         self._emit_rule_event = emit_rule_event
+        self._frame_stream = frame_stream
 
         self._state: WorkerState = "starting"
         self._active = False
@@ -94,18 +96,6 @@ class RuleVisionWorker:
     async def _run(self) -> None:
         import supervision as sv
 
-        capture = await asyncio.to_thread(
-            open_rtsp_capture,
-            url=self._rule.rtsp_source.url,
-            settings=self._settings,
-        )
-        if not capture.isOpened():
-            capture.release()
-            raise RuntimeError(
-                "unable to open RTSP stream for "
-                f"rule {self._rule.id} with rtsp_transport={self._settings.rtsp_transport}"
-            )
-
         tracker = sv.ByteTrack(
             lost_track_buffer=self._settings.tracker_lost_track_buffer,
         )
@@ -115,31 +105,30 @@ class RuleVisionWorker:
             max_samples=self._settings.evidence_buffer_max_samples,
         )
         self._state = "running"
+        last_token: int | None = None
 
         try:
             while not self._stop_event.is_set():
-                success, frame = await asyncio.to_thread(capture.read)
-                observed_at = datetime.now(tz=UTC)
+                result = await self._wait_for_stream_result(after_token=last_token)
+                if result is None:
+                    continue
+                last_token = result.token
 
-                if not success:
-                    self._last_error = (
-                        "failed to read frame from RTSP stream with "
-                        f"rtsp_transport={self._settings.rtsp_transport}"
-                    )
+                if result.frame is None:
+                    self._last_error = result.error
                     transition = dwell_tracker.observe(
-                        observed_at=observed_at,
+                        observed_at=result.observed_at,
                         visible_tracks={},
                     )
                     if transition is not None:
                         await self._emit_transition(transition)
-                    await asyncio.sleep(
-                        self._settings.frame_failure_backoff_seconds,
-                    )
                     continue
 
+                observed_at = result.observed_at
+                self._last_error = None
                 transition = await self._process_frame(
                     tracker=tracker,
-                    frame=frame,
+                    frame=result.frame,
                     observed_at=observed_at,
                     dwell_tracker=dwell_tracker,
                 )
@@ -152,8 +141,32 @@ class RuleVisionWorker:
             transition = dwell_tracker.force_clear(observed_at=datetime.now(tz=UTC))
             if transition is not None:
                 await self._emit_transition(transition)
-            await asyncio.to_thread(capture.release)
             self._active = False
+
+    async def _wait_for_stream_result(
+        self,
+        *,
+        after_token: int | None,
+    ) -> StreamReadResult | None:
+        result_task = asyncio.create_task(
+            self._frame_stream.wait_for_result(after_token=after_token),
+        )
+        stop_task = asyncio.create_task(self._stop_event.wait())
+        done, pending = await asyncio.wait(
+            {result_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+        if stop_task in done:
+            return None
+
+        stop_task.cancel()
+        await asyncio.gather(stop_task, return_exceptions=True)
+        return await result_task
 
     async def _process_frame(
         self,

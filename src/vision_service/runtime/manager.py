@@ -18,6 +18,7 @@ from vision_service.runtime.events import RuleEvent
 from vision_service.settings import Settings
 from vision_service.vision.backend import VisionBackend
 from vision_service.vision.pipeline import RuleVisionWorker
+from vision_service.vision.stream import FrameStream, SharedRTSPStream
 
 
 class RuntimeManager:
@@ -37,6 +38,7 @@ class RuntimeManager:
         self._last_delivery_error: str | None = None
         self._status_task: asyncio.Task[None] | None = None
         self._workers: dict[str, RuleVisionWorker] = {}
+        self._streams: dict[str, SharedRTSPStream] = {}
 
     async def start(self) -> None:
         await self._gateway_client.start()
@@ -54,6 +56,9 @@ class RuntimeManager:
         workers = await self._current_workers()
         for worker in workers:
             await worker.stop()
+        streams = await self._current_streams()
+        for stream in streams:
+            await stream.stop()
         await self._gateway_client.stop()
 
     async def apply_config(self, payload: SyncRequest) -> None:
@@ -61,22 +66,31 @@ class RuntimeManager:
             workers_to_stop, workers_to_keep, workers_to_start = await self._plan_reconcile(
                 payload=payload,
             )
+            desired_rules = self._enabled_rules(payload)
 
             for worker in workers_to_stop:
                 await worker.stop()
 
+            reconciled_streams, streams_to_start, streams_to_stop = (
+                await self._plan_stream_reconcile(rules=desired_rules)
+            )
+
+            for stream in streams_to_stop:
+                await stream.stop()
+            for stream in streams_to_start:
+                await stream.start()
+
             async with self._lock:
                 self._desired_state = payload.model_copy(deep=True)
                 self._workers = {worker.rule_id: worker for worker in workers_to_keep}
+                self._streams = reconciled_streams
                 self._last_runtime_error = None
                 self._last_delivery_error = None
 
                 for rule in workers_to_start:
-                    self._workers[rule.id] = RuleVisionWorker(
+                    self._workers[rule.id] = self._create_worker(
                         rule=rule,
-                        backend=self._backend,
-                        settings=self._settings,
-                        emit_rule_event=self.report_rule_event,
+                        frame_stream=self._streams[self._stream_key_for_rule(rule)],
                     )
 
                 new_workers = [
@@ -104,8 +118,10 @@ class RuntimeManager:
             last_runtime_error = self._last_runtime_error
             last_delivery_error = self._last_delivery_error
             workers = list(self._workers.values())
+            streams = list(self._streams.values())
 
         worker_snapshots = [worker.snapshot() for worker in workers]
+        stream_snapshots = [stream.snapshot() for stream in streams]
 
         if desired_state is None:
             return RuntimeStatusPayload(
@@ -145,9 +161,25 @@ class RuntimeManager:
                 ),
                 "one or more workers are degraded",
             )
+        elif any(
+            snapshot.state == "degraded" or snapshot.last_error
+            for snapshot in stream_snapshots
+        ):
+            status = "degraded"
+            message = next(
+                (
+                    snapshot.last_error
+                    for snapshot in stream_snapshots
+                    if snapshot.last_error
+                ),
+                "one or more streams are degraded",
+            )
         else:
             status = "healthy"
-            message = f"tracking {len(worker_snapshots)} stream(s)"
+            message = (
+                f"tracking {len(stream_snapshots)} stream(s) across "
+                f"{len(worker_snapshots)} rule(s)"
+            )
 
         return RuntimeStatusPayload(
             status=status,
@@ -159,7 +191,7 @@ class RuntimeManager:
                 "enabled_rules": len(enabled_rules),
                 "active_streams": sum(
                     1
-                    for snapshot in worker_snapshots
+                    for snapshot in stream_snapshots
                     if snapshot.state in {"starting", "running"}
                 ),
                 "last_delivery_error": last_delivery_error,
@@ -266,6 +298,10 @@ class RuntimeManager:
         async with self._lock:
             return list(self._workers.values())
 
+    async def _current_streams(self) -> list[SharedRTSPStream]:
+        async with self._lock:
+            return list(self._streams.values())
+
     async def _plan_reconcile(
         self,
         *,
@@ -281,9 +317,8 @@ class RuntimeManager:
             != payload.callbacks.model_dump(mode="json")
         )
         desired_rules = {
-            rule.id: rule.model_copy(deep=True)
-            for rule in payload.rules
-            if payload.recognition_enabled and rule.enabled
+            rule.id: rule
+            for rule in self._enabled_rules(payload)
         }
 
         workers_to_stop: list[RuleVisionWorker] = []
@@ -297,3 +332,63 @@ class RuntimeManager:
             workers_to_keep.append(worker)
 
         return workers_to_stop, workers_to_keep, list(desired_rules.values())
+
+    async def _plan_stream_reconcile(
+        self,
+        *,
+        rules: list[VisionRule],
+    ) -> tuple[dict[str, SharedRTSPStream], list[SharedRTSPStream], list[SharedRTSPStream]]:
+        async with self._lock:
+            current_streams = dict(self._streams)
+
+        required_stream_keys = {
+            self._stream_key_for_rule(rule)
+            for rule in rules
+        }
+        reconciled_streams = {
+            stream_key: stream
+            for stream_key, stream in current_streams.items()
+            if stream_key in required_stream_keys
+        }
+        streams_to_stop = [
+            stream
+            for stream_key, stream in current_streams.items()
+            if stream_key not in required_stream_keys
+        ]
+
+        streams_to_start: list[SharedRTSPStream] = []
+        for stream_key in sorted(required_stream_keys):
+            if stream_key in reconciled_streams:
+                continue
+            stream = self._create_stream(url=stream_key)
+            reconciled_streams[stream_key] = stream
+            streams_to_start.append(stream)
+
+        return reconciled_streams, streams_to_start, streams_to_stop
+
+    def _enabled_rules(self, payload: SyncRequest) -> list[VisionRule]:
+        return [
+            rule.model_copy(deep=True)
+            for rule in payload.rules
+            if payload.recognition_enabled and rule.enabled
+        ]
+
+    def _stream_key_for_rule(self, rule: VisionRule) -> str:
+        return rule.rtsp_source.url
+
+    def _create_stream(self, *, url: str) -> SharedRTSPStream:
+        return SharedRTSPStream(url=url, settings=self._settings)
+
+    def _create_worker(
+        self,
+        *,
+        rule: VisionRule,
+        frame_stream: FrameStream,
+    ) -> RuleVisionWorker:
+        return RuleVisionWorker(
+            rule=rule,
+            backend=self._backend,
+            settings=self._settings,
+            emit_rule_event=self.report_rule_event,
+            frame_stream=frame_stream,
+        )

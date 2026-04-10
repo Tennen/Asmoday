@@ -1,0 +1,194 @@
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+import pytest
+
+from vision_service.contracts import (
+    CallbackPaths,
+    CameraIdentity,
+    EntitySelector,
+    RTSPSource,
+    SyncRequest,
+    VisionRule,
+    ZoneRect,
+)
+from vision_service.runtime.manager import RuntimeManager
+from vision_service.settings import Settings
+from vision_service.vision.stream import StreamReadResult, StreamSnapshot
+
+
+class FakeGatewayClient:
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    async def post_status(self, *, callback_path: str, payload) -> None:  # noqa: ANN001
+        return None
+
+    async def post_events(self, *, callback_path: str, payload) -> None:  # noqa: ANN001
+        return None
+
+    async def post_evidence(self, *, callback_path: str, payload) -> None:  # noqa: ANN001
+        return None
+
+
+class FakeBackend:
+    async def detect(self, frame):  # noqa: ANN001, ANN201
+        raise AssertionError("not used in manager tests")
+
+
+@dataclass
+class FakeStream:
+    url: str
+    started: int = 0
+    stopped: int = 0
+
+    async def start(self) -> None:
+        self.started += 1
+
+    async def stop(self) -> None:
+        self.stopped += 1
+
+    async def wait_for_result(self, *, after_token: int | None) -> StreamReadResult | None:
+        return None
+
+    def snapshot(self) -> StreamSnapshot:
+        return StreamSnapshot(
+            url=self.url,
+            state="running",
+            last_frame_at=datetime.now(tz=UTC),
+            last_error=None,
+        )
+
+
+@dataclass
+class FakeWorker:
+    rule: VisionRule
+    frame_stream: FakeStream
+    started: int = 0
+    stopped: int = 0
+
+    @property
+    def rule_id(self) -> str:
+        return self.rule.id
+
+    def matches(self, rule: VisionRule) -> bool:
+        return self.rule.model_dump(mode="json") == rule.model_dump(mode="json")
+
+    def snapshot(self):  # noqa: ANN202
+        from vision_service.vision.pipeline import WorkerSnapshot
+
+        return WorkerSnapshot(
+            rule_id=self.rule.id,
+            camera_device_id=self.rule.camera.device_id,
+            state="running",
+            active=False,
+            last_frame_at=None,
+            last_error=None,
+            emitted_threshold_events=0,
+        )
+
+    async def start(self) -> None:
+        self.started += 1
+
+    async def stop(self) -> None:
+        self.stopped += 1
+
+
+class RecordingRuntimeManager(RuntimeManager):
+    def __init__(self) -> None:
+        super().__init__(
+            settings=Settings(),
+            gateway_client=FakeGatewayClient(),
+            backend=FakeBackend(),
+        )
+        self.created_streams: list[FakeStream] = []
+        self.created_workers: list[FakeWorker] = []
+
+    def _create_stream(self, *, url: str) -> FakeStream:  # type: ignore[override]
+        stream = FakeStream(url=url)
+        self.created_streams.append(stream)
+        return stream
+
+    def _create_worker(  # type: ignore[override]
+        self,
+        *,
+        rule: VisionRule,
+        frame_stream: FakeStream,
+    ) -> FakeWorker:
+        worker = FakeWorker(rule=rule, frame_stream=frame_stream)
+        self.created_workers.append(worker)
+        return worker
+
+
+def build_rule(*, rule_id: str, url: str) -> VisionRule:
+    return VisionRule(
+        id=rule_id,
+        name=rule_id,
+        enabled=True,
+        camera=CameraIdentity(device_id=f"camera:{rule_id}"),
+        rtsp_source=RTSPSource(url=url),
+        entity_selector=EntitySelector(value="cat"),
+        zone=ZoneRect(x=0.1, y=0.1, width=0.2, height=0.2),
+        stay_threshold_seconds=5,
+    )
+
+
+def build_payload(*, rules: list[VisionRule]) -> SyncRequest:
+    return SyncRequest(
+        sent_at=datetime.now(tz=UTC),
+        callbacks=CallbackPaths(
+            status_path="/status",
+            event_path="/events",
+            evidence_path="/evidence",
+        ),
+        rules=rules,
+    )
+
+
+@pytest.mark.asyncio
+async def test_manager_reuses_single_stream_for_rules_with_same_url() -> None:
+    manager = RecordingRuntimeManager()
+    payload = build_payload(
+        rules=[
+            build_rule(rule_id="rule-1", url="rtsp://camera/shared"),
+            build_rule(rule_id="rule-2", url="rtsp://camera/shared"),
+        ],
+    )
+
+    await manager.apply_config(payload)
+
+    assert len(manager.created_streams) == 1
+    assert len(manager.created_workers) == 2
+    assert manager.created_workers[0].frame_stream is manager.created_workers[1].frame_stream
+
+    status = await manager.snapshot_status()
+    assert status.runtime["active_streams"] == 1
+
+
+@pytest.mark.asyncio
+async def test_manager_stops_unused_streams_after_reconcile() -> None:
+    manager = RecordingRuntimeManager()
+    shared_url = "rtsp://camera/shared"
+
+    await manager.apply_config(
+        build_payload(
+            rules=[
+                build_rule(rule_id="rule-1", url=shared_url),
+                build_rule(rule_id="rule-2", url=shared_url),
+            ],
+        )
+    )
+
+    shared_stream = manager.created_streams[0]
+
+    await manager.apply_config(
+        build_payload(
+            rules=[build_rule(rule_id="rule-1", url="rtsp://camera/other")]
+        )
+    )
+
+    assert shared_stream.stopped == 1
+    assert len(manager.created_streams) == 2

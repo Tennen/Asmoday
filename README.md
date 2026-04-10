@@ -68,8 +68,8 @@ The service defaults to the repository-level `models/` directory and picks the o
 ## Runtime Model
 
 - Gateway remains the source of truth for desired configuration.
-- Each enabled rule currently maps to one RTSP worker.
-- Each worker reads the RTSP source directly, runs YOLO detection with the currently selected model, applies ByteTrack tracking, filters by the configured entity label, and checks whether the tracked box center remains inside the configured normalized zone.
+- Enabled rules still run as independent dwell workers, but rules that share the same `rtsp_source.url` now reuse a single RTSP capture task.
+- Each worker consumes the latest shared frame, runs YOLO detection with the currently selected model, applies ByteTrack tracking, filters by the configured entity label, and checks whether the tracked box center remains inside the configured normalized zone.
 - `threshold_met` is emitted once per dwell episode.
 - `cleared` is emitted once when the active episode is no longer present.
 - Evidence uploads use `start`, `middle`, and `end` JPEG frames captured from the episode buffer.
