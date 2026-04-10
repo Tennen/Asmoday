@@ -16,6 +16,12 @@ from vision_service.contracts.control import (
     VisionRule,
     ZoneRect,
 )
+from vision_service.contracts.models import (
+    ModelDescriptor,
+    ModelListResponse,
+    ModelSelectionRequest,
+    ModelSelectionResponse,
+)
 
 __all__ = [
     "CallbackPaths",
@@ -29,6 +35,10 @@ __all__ = [
     "EventRecord",
     "RTSPSource",
     "RuntimeStatusPayload",
+    "ModelDescriptor",
+    "ModelListResponse",
+    "ModelSelectionRequest",
+    "ModelSelectionResponse",
     "SyncRequest",
     "SyncResponse",
     "VisionRule",

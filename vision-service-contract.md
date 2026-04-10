@@ -44,6 +44,10 @@ Current base paths:
 
 - Gateway -> Vision Service entity catalog:
   `GET {service_url}/api/v1/capabilities/vision_entity_stay_zone/entities`
+- Gateway -> Vision Service model catalog:
+  `GET {service_url}/api/v1/capabilities/vision_entity_stay_zone/models`
+- Gateway -> Vision Service model selection:
+  `PUT {service_url}/api/v1/capabilities/vision_entity_stay_zone/model`
 - Gateway -> Vision Service sync:
   `PUT {service_url}/api/v1/capabilities/vision_entity_stay_zone`
 - Vision Service -> Gateway status callback:
@@ -55,13 +59,95 @@ Current base paths:
 
 The `status_path`, `event_path`, and `evidence_path` are supplied by Gateway inside the sync payload, so the Vision Service should not hardcode them beyond basic routing support.
 
-## 0. Entity Catalog Discovery: Gateway -> Vision Service
+## 0. Available Models and Active Model Selection: Gateway -> Vision Service
+
+Gateway may enumerate available models and choose the active runtime model before fetching the entity catalog or syncing rules.
+
+### List Available Models
+
+`GET {service_url}/api/v1/capabilities/vision_entity_stay_zone/models`
+
+Recommended response:
+
+```json
+{
+  "schema_version": "celestia.vision.models.v1",
+  "service_version": "1.2.0",
+  "current_model_name": "yolo11n.pt",
+  "default_model_name": "yolo11n.pt",
+  "fetched_at": "2026-04-10T08:55:00Z",
+  "models": [
+    {
+      "name": "yolo11n.pt",
+      "created_at": "2026-04-10T08:00:00Z",
+      "is_selected": true,
+      "is_default": true
+    },
+    {
+      "name": "custom-pets.pt",
+      "created_at": "2026-04-10T08:10:00Z",
+      "is_selected": false,
+      "is_default": false
+    }
+  ]
+}
+```
+
+Field semantics:
+
+- `current_model_name`
+  Effective active model currently used for runtime inference.
+- `default_model_name`
+  Model automatically chosen when no explicit selection exists.
+- `models`
+  Enumerated entries from the configured model directory, sorted by creation time ascending.
+
+### Select Active Model
+
+`PUT {service_url}/api/v1/capabilities/vision_entity_stay_zone/model`
+
+Request body:
+
+```json
+{
+  "model_name": "custom-pets.pt"
+}
+```
+
+Recommended response:
+
+```json
+{
+  "ok": true,
+  "model_name": "custom-pets.pt",
+  "changed_at": "2026-04-10T09:00:00Z"
+}
+```
+
+Field semantics:
+
+- `model_name`
+  Exact model entry name from the configured model directory.
+  If omitted or `null`, the Vision Service resets to the default model chosen by creation time ordering.
+
+Selection failure semantics:
+
+- If `model_name` does not exist in the configured model directory, the Vision Service should return `404`.
+- If the configured model directory is missing or empty, the Vision Service should return `5xx` and surface the problem explicitly.
+
+## 1. Entity Catalog Discovery: Gateway -> Vision Service
 
 Before Gateway configures a rule such as `cat` stay-zone detection, it first fetches the current model-supported entity catalog from the Vision Service.
 
 ### Request
 
 `GET {service_url}/api/v1/capabilities/vision_entity_stay_zone/entities`
+
+Optional query parameter:
+
+- `model_name`
+  Exact model entry name from the configured model directory.
+  When present, the Vision Service should return the catalog for that model without changing the active runtime model selection.
 
 ### Recommended Response
 
@@ -111,7 +197,11 @@ Before Gateway configures a rule such as `cat` stay-zone detection, it first fet
 
 Gateway uses this catalog to populate the rule editor and validate configured entities when the catalog matches the target Vision Service address.
 
-## 1. Config Sync: Gateway -> Vision Service
+If `model_name` is omitted, the service should use the currently selected model, or the default creation-time-ordered model when no explicit selection exists.
+
+If `model_name` does not exist in the configured model directory, the Vision Service should return `404`.
+
+## 2. Config Sync: Gateway -> Vision Service
 
 ### Request
 
@@ -244,7 +334,7 @@ Recommended error response:
 }
 ```
 
-## 2. Status Callback: Vision Service -> Gateway
+## 3. Status Callback: Vision Service -> Gateway
 
 ### Request
 
@@ -289,7 +379,7 @@ Gateway responds with the persisted status object.
 
 The Vision Service may ignore the response body if it only needs delivery confirmation.
 
-## 3. Event Callback: Vision Service -> Gateway
+## 4. Event Callback: Vision Service -> Gateway
 
 ### Request
 
@@ -382,7 +472,7 @@ The Vision Service should collapse its internal tracking into the rule-level eve
 
 If multiple matching entities exist simultaneously, the service should still emit rule-level `threshold_met` / `cleared` transitions rather than raw per-frame detections.
 
-## 4. Evidence Callback: Vision Service -> Gateway
+## 5. Evidence Callback: Vision Service -> Gateway
 
 ### Request
 
@@ -458,7 +548,7 @@ Request body:
 - Gateway associates each screenshot with the referenced event record.
 - Gateway enforces screenshot retention using its own configured persistence window.
 
-## 5. Gateway Side Effects
+## 6. Gateway Side Effects
 
 For each accepted event callback, Gateway currently does two things:
 
@@ -491,7 +581,7 @@ Both statuses update:
 
 For each accepted evidence callback, Gateway persists the uploaded screenshots and exposes them back on the matching event record for admin review.
 
-## 6. Failure Handling
+## 7. Failure Handling
 
 ### Config Sync Failure
 
@@ -523,7 +613,7 @@ For evidence retries:
 - keep `event_id` stable
 - upload at most one screenshot per phase (`start`, `middle`, `end`) unless intentionally replacing the prior upload
 
-## 7. Minimal Downstream Checklist
+## 8. Minimal Downstream Checklist
 
 To be considered compatible with the current Gateway contract, the Vision Service must:
 
@@ -538,7 +628,7 @@ To be considered compatible with the current Gateway contract, the Vision Servic
 9. POST screenshot evidence batches to Gateway using the provided `evidence_path`.
 10. Avoid repeated `threshold_met` emission for the same active stay episode.
 
-## 8. Schema Reference
+## 9. Schema Reference
 
 The canonical Go structs in this repository are:
 

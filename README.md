@@ -16,6 +16,8 @@ The service:
 ## Implemented Contract Surface
 
 - `GET /api/v1/capabilities/vision_entity_stay_zone/entities`
+- `GET /api/v1/capabilities/vision_entity_stay_zone/models`
+- `PUT /api/v1/capabilities/vision_entity_stay_zone/model`
 - `PUT /api/v1/capabilities/vision_entity_stay_zone`
 - Gateway status callback delivery
 - Gateway event callback delivery
@@ -31,25 +33,37 @@ uv run vision-service
 ```
 
 Environment variables are loaded with the `VISION_SERVICE_` prefix.
+The service defaults to the repository-level `models/` directory and picks the oldest-created model entry when no explicit model is selected.
 
 ## Important Settings
 
 - `VISION_SERVICE_GATEWAY_BASE_URL`
   Base URL for Gateway callback delivery.
 - `VISION_SERVICE_MODEL_PATH`
-  Ultralytics model path or weight file, for example `yolo11n.pt`.
+  Optional model directory path for backward compatibility. If unset, the service uses `./models`.
+- `VISION_SERVICE_MODEL_DIRECTORY`
+  Preferred model directory setting. The service enumerates this directory, sorts entries by creation time, and uses the first model by default.
 - `VISION_SERVICE_MODEL_DEVICE`
-  Device passed to Ultralytics, for example `cpu` or `mps`.
+  Device passed to Ultralytics. Defaults to `mps` for macOS.
 - `VISION_SERVICE_PORT`
   HTTP listen port for the service.
 - `VISION_SERVICE_STATUS_INTERVAL_SECONDS`
   Periodic status callback interval.
 
+## Model Selection
+
+- `GET /api/v1/capabilities/vision_entity_stay_zone/models`
+  Returns the available models, the current active model, and the default model chosen by creation time ordering.
+- `PUT /api/v1/capabilities/vision_entity_stay_zone/model`
+  Selects the active runtime model. If `model_name` is omitted or `null`, the service resets to the default model.
+- `GET /api/v1/capabilities/vision_entity_stay_zone/entities?model_name=foo.pt`
+  Returns the catalog for a specific model without changing the active runtime selection.
+
 ## Runtime Model
 
 - Gateway remains the source of truth for desired configuration.
 - Each enabled rule currently maps to one RTSP worker.
-- Each worker reads the RTSP source directly, runs YOLO detection, applies ByteTrack tracking, filters by the configured entity label, and checks whether the tracked box center remains inside the configured normalized zone.
+- Each worker reads the RTSP source directly, runs YOLO detection with the currently selected model, applies ByteTrack tracking, filters by the configured entity label, and checks whether the tracked box center remains inside the configured normalized zone.
 - `threshold_met` is emitted once per dwell episode.
 - `cleared` is emitted once when the active episode is no longer present.
 - Evidence uploads use `start`, `middle`, and `end` JPEG frames captured from the episode buffer.
@@ -59,6 +73,5 @@ Environment variables are loaded with the `VISION_SERVICE_` prefix.
 Static validation completed:
 
 - `python3 -m compileall src tests`
-- direct smoke execution of `RuleDwellTracker`
-
-Full `pytest` execution depends on a successful `uv sync --extra dev` run because the local environment did not yet finish installing all packages during implementation.
+- `.venv/bin/pytest`
+- FastAPI app factory smoke via `.venv/bin/python -c "from vision_service.app import create_app; create_app()"`

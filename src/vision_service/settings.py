@@ -1,7 +1,12 @@
 from functools import lru_cache
+from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_model_directory() -> Path:
+    return Path(__file__).resolve().parents[2] / "models"
 
 
 class Settings(BaseSettings):
@@ -10,6 +15,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     service_name: str = "vision-service"
@@ -25,8 +31,14 @@ class Settings(BaseSettings):
     callback_retry_backoff_seconds: float = Field(default=1.0, gt=0)
     status_interval_seconds: float = Field(default=30.0, gt=0)
 
-    model_path: str = "yolo11n.pt"
-    model_device: str = "cpu"
+    model_directory: Path = Field(
+        default_factory=_default_model_directory,
+        validation_alias=AliasChoices(
+            "VISION_SERVICE_MODEL_DIRECTORY",
+            "VISION_SERVICE_MODEL_PATH",
+        ),
+    )
+    model_device: str = "mps"
     model_confidence_threshold: float = Field(default=0.35, gt=0, lt=1)
 
     frame_sample_interval_seconds: float = Field(default=0.25, gt=0)
