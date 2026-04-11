@@ -42,7 +42,7 @@ Environment variables use the `VISION_SERVICE_` prefix.
 - `VISION_SERVICE_MODEL_DIRECTORY`
   Model directory. If unset, the service uses `./models`.
 - `VISION_SERVICE_MODEL_DEVICE`
-  Device passed to Ultralytics. Defaults to `mps` on macOS.
+  Device passed to Ultralytics. Defaults to `cpu`.
 - `VISION_SERVICE_RTSP_TRANSPORT`
   RTSP lower transport for OpenCV FFmpeg capture. Defaults to `tcp`.
 - `VISION_SERVICE_RTSP_OPEN_TIMEOUT_MSEC`
@@ -86,8 +86,7 @@ The service may asynchronously send:
 - Gateway remains the source of truth for desired configuration.
 - Enabled rules still run as independent dwell workers, but rules that share the same `rtsp_source.url` reuse a single RTSP capture task.
 - Each worker consumes the latest shared frame, runs YOLO detection with the currently selected model, applies ByteTrack tracking, filters by the configured entity label, and checks whether the tracked box center remains inside the configured normalized zone.
-- `threshold_met` is emitted once per dwell episode.
-- `cleared` is emitted once when the active episode is no longer present.
+- `threshold_met` is emitted once after a dwell episode ends and exceeded the configured threshold.
 - Evidence is sent as `start`, `middle`, and `end` JPEG frames over the WebSocket session.
 
 ## Validation

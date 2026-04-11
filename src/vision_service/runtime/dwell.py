@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Literal, Mapping
 
 
-TransitionStatus = Literal["threshold_met", "cleared"]
+TransitionStatus = Literal["threshold_met"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -59,9 +59,13 @@ class RuleDwellTracker:
         visible_tracks: Mapping[int, bytes | None],
     ) -> DwellTransition | None:
         current_ids = set(visible_tracks)
-        for track_id in list(self._tracks):
-            if track_id not in current_ids:
-                del self._tracks[track_id]
+        removed_tracks = {
+            track_id: episode
+            for track_id, episode in list(self._tracks.items())
+            if track_id not in current_ids
+        }
+        for track_id in removed_tracks:
+            del self._tracks[track_id]
 
         for track_id, image_bytes in visible_tracks.items():
             episode = self._tracks.get(track_id)
@@ -98,53 +102,26 @@ class RuleDwellTracker:
             if episode.threshold_met
         ]
 
-        if not self._active and qualifying:
+        if qualifying:
             chosen = min(
                 qualifying,
                 key=lambda episode: (episode.entered_at, episode.track_id),
             )
             self._active = True
             self._active_track_id = chosen.track_id
-            self._last_active_dwell_seconds = max(
-                episode.last_dwell_seconds for episode in qualifying
-            )
-            return DwellTransition(
-                status="threshold_met",
-                observed_at=observed_at,
-                dwell_seconds=chosen.last_dwell_seconds,
-                track_id=chosen.track_id,
-                evidence_samples=self._select_evidence_samples(chosen),
-            )
-
-        if self._active and not qualifying:
-            return self.force_clear(observed_at=observed_at)
-
-        if self._active and qualifying:
-            self._last_active_dwell_seconds = max(
-                episode.last_dwell_seconds for episode in qualifying
-            )
-            if self._active_track_id not in {episode.track_id for episode in qualifying}:
-                replacement = min(
-                    qualifying,
-                    key=lambda episode: (episode.entered_at, episode.track_id),
-                )
-                self._active_track_id = replacement.track_id
-
-        return None
-
-    def force_clear(self, *, observed_at: datetime) -> DwellTransition | None:
-        if not self._active:
+            self._last_active_dwell_seconds = chosen.last_dwell_seconds
             return None
 
-        transition = DwellTransition(
-            status="cleared",
+        return self._finalize_active_transition(
             observed_at=observed_at,
-            dwell_seconds=self._last_active_dwell_seconds,
-            track_id=self._active_track_id,
+            removed_tracks=removed_tracks,
         )
-        self._active = False
-        self._active_track_id = None
-        self._last_active_dwell_seconds = 0
+
+    def force_clear(self, *, observed_at: datetime) -> DwellTransition | None:
+        transition = self._finalize_active_transition(
+            observed_at=observed_at,
+            removed_tracks={},
+        )
         self._tracks.clear()
         return transition
 
@@ -175,8 +152,88 @@ class RuleDwellTracker:
             )
         )
         if len(episode.samples) > self._max_samples:
-            episode.samples.pop(0)
+            episode.samples = self._rebalance_samples(
+                samples=episode.samples,
+                max_samples=self._max_samples,
+            )
         episode.last_sampled_at = observed_at
+
+    def _finalize_active_transition(
+        self,
+        *,
+        observed_at: datetime,
+        removed_tracks: Mapping[int, TrackEpisode],
+    ) -> DwellTransition | None:
+        if not self._active:
+            return None
+
+        episode = self._episode_for_active_track(removed_tracks=removed_tracks)
+        transition = DwellTransition(
+            status="threshold_met",
+            observed_at=observed_at,
+            dwell_seconds=(
+                episode.last_dwell_seconds
+                if episode is not None
+                else self._last_active_dwell_seconds
+            ),
+            track_id=episode.track_id if episode is not None else self._active_track_id,
+            evidence_samples=(
+                self._select_evidence_samples(episode)
+                if episode is not None
+                else ()
+            ),
+        )
+        self._active = False
+        self._active_track_id = None
+        self._last_active_dwell_seconds = 0
+        return transition
+
+    def _episode_for_active_track(
+        self,
+        *,
+        removed_tracks: Mapping[int, TrackEpisode],
+    ) -> TrackEpisode | None:
+        if self._active_track_id is not None:
+            episode = self._tracks.get(self._active_track_id)
+            if episode is not None:
+                return episode
+            episode = removed_tracks.get(self._active_track_id)
+            if episode is not None:
+                return episode
+
+        completed_tracks = [
+            episode for episode in removed_tracks.values() if episode.threshold_met
+        ]
+        if not completed_tracks:
+            return None
+        return min(
+            completed_tracks,
+            key=lambda episode: (episode.entered_at, episode.track_id),
+        )
+
+    @staticmethod
+    def _rebalance_samples(
+        *,
+        samples: list[EvidenceSample],
+        max_samples: int,
+    ) -> list[EvidenceSample]:
+        if len(samples) <= max_samples:
+            return samples
+        if max_samples <= 1:
+            return [samples[-1]]
+
+        last_index = len(samples) - 1
+        step = last_index / (max_samples - 1)
+        chosen_indices: list[int] = []
+        previous_index = -1
+        for slot in range(max_samples):
+            raw_index = round(slot * step)
+            min_index = previous_index + 1
+            max_index = last_index - (max_samples - slot - 1)
+            index = min(max(raw_index, min_index), max_index)
+            chosen_indices.append(index)
+            previous_index = index
+        return [samples[index] for index in chosen_indices]
 
     @staticmethod
     def _select_evidence_samples(

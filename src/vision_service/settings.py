@@ -44,7 +44,7 @@ class Settings(BaseSettings):
             "VISION_SERVICE_MODEL_PATH",
         ),
     )
-    model_device: str = "mps"
+    model_device: str = "cpu"
     model_confidence_threshold: float = Field(default=0.35, gt=0, lt=1)
 
     frame_sample_interval_seconds: float = Field(default=0.25, gt=0)

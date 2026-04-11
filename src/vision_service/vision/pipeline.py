@@ -333,9 +333,6 @@ class RuleVisionWorker:
         )
         if transition.status == "threshold_met":
             self._emitted_threshold_events += 1
-            self._active = True
-        elif transition.status == "cleared":
-            self._active = False
 
     def _stream_url(self) -> str:
         stream_url = getattr(self._frame_stream, "url", None)

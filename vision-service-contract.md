@@ -117,7 +117,7 @@ Payload schema:
 
 ### `rule_events`
 
-Sent when a rule transitions to `threshold_met` or `cleared`.
+Sent once after a dwell episode ends and the completed stay exceeded the configured threshold.
 
 ```json
 {
@@ -129,8 +129,8 @@ Sent when a rule transitions to `threshold_met` or `cleared`.
         "rule_id": "feeder-zone",
         "camera_device_id": "hikvision:camera:entry-1",
         "status": "threshold_met",
-        "observed_at": "2026-04-11T08:00:10Z",
-        "dwell_seconds": 5,
+        "observed_at": "2026-04-11T08:00:18Z",
+        "dwell_seconds": 13,
         "entity_value": "cat",
         "metadata": {
           "track_id": "7"
@@ -143,7 +143,7 @@ Sent when a rule transitions to `threshold_met` or `cleared`.
 
 ### `evidence`
 
-Sent after the matching `rule_events` message when a `threshold_met` transition includes evidence.
+Sent after the matching `rule_events` message when the completed dwell event includes evidence.
 
 ```json
 {
