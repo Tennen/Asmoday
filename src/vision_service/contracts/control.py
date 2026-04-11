@@ -4,14 +4,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class CallbackPaths(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    status_path: str = Field(min_length=1)
-    event_path: str = Field(min_length=1)
-    evidence_path: str = Field(min_length=1)
-
-
 class CameraIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -68,14 +60,9 @@ class VisionRule(BaseModel):
 class SyncRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["celestia.vision.control.v1"] = "celestia.vision.control.v1"
+    schema_version: Literal["celestia.vision.control.ws.v1"] = (
+        "celestia.vision.control.ws.v1"
+    )
     sent_at: datetime
     recognition_enabled: bool = True
-    callbacks: CallbackPaths
     rules: list[VisionRule]
-
-
-class SyncResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    ok: bool = True

@@ -112,6 +112,10 @@ class VisionBackend:
 
         return ModelSelectionResponse.build(model_name=model_record.name)
 
+    async def reset_model_selection(self) -> None:
+        async with self._lock:
+            self._selected_model_name = None
+
     async def current_model_name(self) -> str:
         async with self._lock:
             model_records = await asyncio.to_thread(self._discover_models)

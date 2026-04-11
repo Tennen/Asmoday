@@ -1,3 +1,13 @@
-from vision_service.gateway.client import CallbackDeliveryError, GatewayCallbackClient
+from vision_service.gateway.session import GatewaySessionController
+from vision_service.gateway.transport import (
+    GatewayTransport,
+    GatewayTransportError,
+    GatewayWebSocketTransport,
+)
 
-__all__ = ["CallbackDeliveryError", "GatewayCallbackClient"]
+__all__ = [
+    "GatewaySessionController",
+    "GatewayTransport",
+    "GatewayTransportError",
+    "GatewayWebSocketTransport",
+]

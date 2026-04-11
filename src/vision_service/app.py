@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from vision_service.api import router
 from vision_service.container import ServiceContainer
-from vision_service.gateway import GatewayCallbackClient
+from vision_service.gateway import GatewaySessionController
 from vision_service.runtime.manager import RuntimeManager
 from vision_service.settings import get_settings
 from vision_service.vision.backend import VisionBackend
@@ -15,15 +15,18 @@ from vision_service.vision.backend import VisionBackend
 async def lifespan(app: FastAPI):
     settings = get_settings()
     backend = VisionBackend(settings)
-    gateway_client = GatewayCallbackClient(settings)
+    manager = RuntimeManager(
+        settings=settings,
+        backend=backend,
+    )
     container = ServiceContainer(
         settings=settings,
         backend=backend,
-        gateway_client=gateway_client,
-        manager=RuntimeManager(
+        manager=manager,
+        gateway_session=GatewaySessionController(
             settings=settings,
-            gateway_client=gateway_client,
             backend=backend,
+            manager=manager,
         ),
     )
     app.state.container = container
@@ -42,7 +45,7 @@ def create_app() -> FastAPI:
         version=settings.service_version,
         lifespan=lifespan,
     )
-    app.include_router(router, prefix=settings.api_prefix)
+    app.include_router(router, prefix=settings.gateway_ws_path)
     return app
 
 
@@ -53,4 +56,6 @@ def main() -> None:
         factory=True,
         host=settings.host,
         port=settings.port,
+        log_level=settings.log_level,
+        ws_max_size=settings.websocket_max_message_bytes,
     )

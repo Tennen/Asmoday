@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 import pytest
 
 from vision_service.contracts import (
-    CallbackPaths,
     CameraIdentity,
     EntitySelector,
     RTSPSource,
@@ -16,23 +15,6 @@ from vision_service.contracts import (
 from vision_service.runtime.manager import RuntimeManager
 from vision_service.settings import Settings
 from vision_service.vision.stream import StreamReadResult, StreamSnapshot
-
-
-class FakeGatewayClient:
-    async def start(self) -> None:
-        return None
-
-    async def stop(self) -> None:
-        return None
-
-    async def post_status(self, *, callback_path: str, payload) -> None:  # noqa: ANN001
-        return None
-
-    async def post_events(self, *, callback_path: str, payload) -> None:  # noqa: ANN001
-        return None
-
-    async def post_evidence(self, *, callback_path: str, payload) -> None:  # noqa: ANN001
-        return None
 
 
 class FakeBackend:
@@ -102,7 +84,6 @@ class RecordingRuntimeManager(RuntimeManager):
     def __init__(self) -> None:
         super().__init__(
             settings=Settings(),
-            gateway_client=FakeGatewayClient(),
             backend=FakeBackend(),
         )
         self.created_streams: list[FakeStream] = []
@@ -143,13 +124,9 @@ def build_payload(
     recognition_enabled: bool = True,
 ) -> SyncRequest:
     return SyncRequest(
+        schema_version="celestia.vision.control.ws.v1",
         sent_at=datetime.now(tz=UTC),
         recognition_enabled=recognition_enabled,
-        callbacks=CallbackPaths(
-            status_path="/status",
-            event_path="/events",
-            evidence_path="/evidence",
-        ),
         rules=rules,
     )
 
@@ -216,3 +193,21 @@ async def test_manager_logs_when_sync_has_no_runnable_rules(caplog) -> None:
     assert len(manager.created_workers) == 0
     assert "reconciling config sync" in caplog.text
     assert "config sync left no runnable rules" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_manager_clear_session_stops_workers_and_streams() -> None:
+    manager = RecordingRuntimeManager()
+    payload = build_payload(
+        rules=[build_rule(rule_id="rule-1", url="rtsp://camera/shared")]
+    )
+
+    await manager.apply_config(payload)
+    shared_stream = manager.created_streams[0]
+    worker = manager.created_workers[0]
+
+    await manager.clear_session(reason="gateway websocket disconnected")
+
+    assert shared_stream.stopped == 1
+    assert worker.stopped == 1
+    assert await manager.current_config() is None

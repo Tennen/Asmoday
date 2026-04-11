@@ -21,15 +21,14 @@ class Settings(BaseSettings):
 
     service_name: str = "vision-service"
     service_version: str = "0.1.0"
-    api_prefix: str = "/api/v1/capabilities/vision_entity_stay_zone"
+    gateway_ws_path: str = "/api/v1/capabilities/vision_entity_stay_zone"
 
     host: str = "0.0.0.0"
     port: int = 8081
-
-    gateway_base_url: str = "http://127.0.0.1:8080"
-    callback_timeout_seconds: float = Field(default=10.0, gt=0)
-    callback_max_attempts: int = Field(default=3, ge=1)
-    callback_retry_backoff_seconds: float = Field(default=1.0, gt=0)
+    log_level: Literal["critical", "error", "warning", "info", "debug", "trace"] = (
+        "info"
+    )
+    websocket_max_message_bytes: int = Field(default=16_777_216, ge=1)
     status_interval_seconds: float = Field(default=30.0, gt=0)
     rtsp_transport: Literal["tcp", "udp"] = "tcp"
     rtsp_open_timeout_msec: int = Field(default=10_000, ge=1)

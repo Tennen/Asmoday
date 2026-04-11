@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from vision_service.gateway.client import GatewayCallbackClient
+from vision_service.gateway.session import GatewaySessionController
 from vision_service.runtime.manager import RuntimeManager
 from vision_service.settings import Settings
 from vision_service.vision.backend import VisionBackend
@@ -10,5 +10,5 @@ from vision_service.vision.backend import VisionBackend
 class ServiceContainer:
     settings: Settings
     backend: VisionBackend
-    gateway_client: GatewayCallbackClient
     manager: RuntimeManager
+    gateway_session: GatewaySessionController

@@ -14,7 +14,7 @@ from vision_service.contracts import (
     SyncRequest,
     VisionRule,
 )
-from vision_service.gateway import CallbackDeliveryError, GatewayCallbackClient
+from vision_service.gateway.transport import GatewayTransport, GatewayTransportError
 from vision_service.runtime.events import RuleEvent
 from vision_service.settings import Settings
 from vision_service.vision.backend import VisionBackend
@@ -28,11 +28,9 @@ class RuntimeManager:
     def __init__(
         self,
         settings: Settings,
-        gateway_client: GatewayCallbackClient,
         backend: VisionBackend,
     ) -> None:
         self._settings = settings
-        self._gateway_client = gateway_client
         self._backend = backend
         self._lock = asyncio.Lock()
         self._reconcile_lock = asyncio.Lock()
@@ -40,11 +38,12 @@ class RuntimeManager:
         self._last_runtime_error: str | None = None
         self._last_delivery_error: str | None = None
         self._status_task: asyncio.Task[None] | None = None
+        self._transport: GatewayTransport | None = None
+        self._accepting_telemetry = False
         self._workers: dict[str, RuleVisionWorker] = {}
         self._streams: dict[str, SharedRTSPStream] = {}
 
     async def start(self) -> None:
-        await self._gateway_client.start()
         if self._status_task is None:
             self._status_task = asyncio.create_task(self._status_loop())
             logger.info(
@@ -60,14 +59,43 @@ class RuntimeManager:
             except asyncio.CancelledError:
                 pass
             self._status_task = None
-        workers = await self._current_workers()
-        for worker in workers:
-            await worker.stop()
-        streams = await self._current_streams()
-        for stream in streams:
-            await stream.stop()
-        await self._gateway_client.stop()
+        await self.clear_session(reason="service stopping")
         logger.info("runtime manager stopped")
+
+    async def attach_transport(self, transport: GatewayTransport) -> None:
+        async with self._lock:
+            self._transport = transport
+            self._accepting_telemetry = True
+            self._last_delivery_error = None
+        logger.info("runtime manager attached websocket transport")
+
+    async def clear_session(self, *, reason: str) -> None:
+        async with self._reconcile_lock:
+            workers = await self._current_workers()
+            streams = await self._current_streams()
+
+            async with self._lock:
+                self._transport = None
+                self._accepting_telemetry = False
+
+            for worker in workers:
+                await worker.stop()
+            for stream in streams:
+                await stream.stop()
+
+            async with self._lock:
+                self._desired_state = None
+                self._last_runtime_error = None
+                self._last_delivery_error = None
+                self._workers = {}
+                self._streams = {}
+
+        logger.info(
+            "cleared runtime session reason=%s stopped_workers=%s stopped_streams=%s",
+            reason,
+            len(workers),
+            len(streams),
+        )
 
     async def apply_config(self, payload: SyncRequest) -> None:
         async with self._reconcile_lock:
@@ -115,10 +143,7 @@ class RuntimeManager:
             )
 
             for stream in streams_to_stop:
-                logger.info(
-                    "stopping unused RTSP stream url=%s",
-                    stream.url,
-                )
+                logger.info("stopping unused RTSP stream url=%s", stream.url)
                 await stream.stop()
             for stream in streams_to_start:
                 await stream.start()
@@ -145,10 +170,7 @@ class RuntimeManager:
                         frame_stream=self._streams[self._stream_key_for_rule(rule)],
                     )
 
-                new_workers = [
-                    self._workers[rule.id]
-                    for rule in workers_to_start
-                ]
+                new_workers = [self._workers[rule.id] for rule in workers_to_start]
 
             for worker in new_workers:
                 await worker.start()
@@ -168,7 +190,7 @@ class RuntimeManager:
 
         try:
             await self.report_status()
-        except CallbackDeliveryError:
+        except GatewayTransportError:
             return
 
     async def current_config(self) -> SyncRequest | None:
@@ -191,7 +213,7 @@ class RuntimeManager:
         if desired_state is None:
             return RuntimeStatusPayload(
                 status="stopped",
-                message="awaiting configuration from Gateway",
+                message="awaiting websocket configuration from Gateway",
                 service_version=self._settings.service_version,
                 reported_at=datetime.now(tz=UTC),
                 runtime={
@@ -270,21 +292,14 @@ class RuntimeManager:
 
     async def report_status(self) -> None:
         status_payload = await self.snapshot_status()
-        callback_path = await self._status_callback_path()
-        if callback_path is None:
+        transport = await self._transport_for_send()
+        if transport is None:
             return
 
         try:
-            await self._gateway_client.post_status(
-                callback_path=callback_path,
-                payload=status_payload,
-            )
-        except CallbackDeliveryError as exc:
-            logger.warning(
-                "status callback delivery failed callback_path=%s error=%s",
-                callback_path,
-                exc,
-            )
+            await transport.send_status(status_payload)
+        except GatewayTransportError as exc:
+            logger.warning("runtime status delivery failed error=%s", exc)
             async with self._lock:
                 self._last_delivery_error = str(exc)
             raise
@@ -295,15 +310,17 @@ class RuntimeManager:
     async def report_rule_event(self, event: RuleEvent) -> str:
         async with self._lock:
             desired_state = self._desired_state
+            transport = self._transport if self._accepting_telemetry else None
 
+        event_id = event.event_id or self._new_event_id()
+        if transport is None:
+            return event_id
         if desired_state is None:
             raise RuntimeError("cannot emit events before configuration is applied")
 
-        event_id = event.event_id or self._new_event_id()
         try:
-            await self._gateway_client.post_events(
-                callback_path=desired_state.callbacks.event_path,
-                payload=EventCallbackPayload(
+            await transport.send_events(
+                EventCallbackPayload(
                     events=[
                         EventRecord(
                             event_id=event_id,
@@ -316,13 +333,12 @@ class RuntimeManager:
                             metadata=event.metadata or None,
                         )
                     ]
-                ),
+                )
             )
 
             if event.evidence:
-                await self._gateway_client.post_evidence(
-                    callback_path=desired_state.callbacks.evidence_path,
-                    payload=EvidenceCallbackPayload(
+                await transport.send_evidence(
+                    EvidenceCallbackPayload(
                         captures=[
                             EvidenceCapture(
                                 capture_id=f"{event_id}:{capture.phase}",
@@ -336,9 +352,9 @@ class RuntimeManager:
                             )
                             for capture in event.evidence
                         ]
-                    ),
+                    )
                 )
-        except CallbackDeliveryError as exc:
+        except GatewayTransportError as exc:
             logger.warning(
                 "rule event delivery failed rule_id=%s camera_device_id=%s "
                 "event_id=%s status=%s error=%s",
@@ -366,18 +382,12 @@ class RuntimeManager:
         )
         return event_id
 
-    async def _status_callback_path(self) -> str | None:
-        async with self._lock:
-            if self._desired_state is None:
-                return None
-            return self._desired_state.callbacks.status_path
-
     async def _status_loop(self) -> None:
         while True:
             await asyncio.sleep(self._settings.status_interval_seconds)
             try:
                 await self.report_status()
-            except CallbackDeliveryError:
+            except GatewayTransportError:
                 continue
 
     def _new_event_id(self) -> str:
@@ -398,24 +408,14 @@ class RuntimeManager:
     ) -> tuple[list[RuleVisionWorker], list[RuleVisionWorker], list[VisionRule]]:
         async with self._lock:
             existing_workers = list(self._workers.values())
-            current_state = self._desired_state
 
-        callbacks_changed = (
-            current_state is not None
-            and current_state.callbacks.model_dump(mode="json")
-            != payload.callbacks.model_dump(mode="json")
-        )
-        desired_rules = {
-            rule.id: rule
-            for rule in self._enabled_rules(payload)
-        }
-
+        desired_rules = {rule.id: rule for rule in self._enabled_rules(payload)}
         workers_to_stop: list[RuleVisionWorker] = []
         workers_to_keep: list[RuleVisionWorker] = []
 
         for worker in existing_workers:
             desired_rule = desired_rules.pop(worker.rule_id, None)
-            if desired_rule is None or callbacks_changed or not worker.matches(desired_rule):
+            if desired_rule is None or not worker.matches(desired_rule):
                 workers_to_stop.append(worker)
                 continue
             workers_to_keep.append(worker)
@@ -430,10 +430,7 @@ class RuntimeManager:
         async with self._lock:
             current_streams = dict(self._streams)
 
-        required_stream_keys = {
-            self._stream_key_for_rule(rule)
-            for rule in rules
-        }
+        required_stream_keys = {self._stream_key_for_rule(rule) for rule in rules}
         reconciled_streams = {
             stream_key: stream
             for stream_key, stream in current_streams.items()
@@ -481,3 +478,9 @@ class RuntimeManager:
             emit_rule_event=self.report_rule_event,
             frame_stream=frame_stream,
         )
+
+    async def _transport_for_send(self) -> GatewayTransport | None:
+        async with self._lock:
+            if not self._accepting_telemetry:
+                return None
+            return self._transport

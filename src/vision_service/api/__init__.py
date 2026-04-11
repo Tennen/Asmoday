@@ -1,3 +1,3 @@
-from vision_service.api.routes import router
+from vision_service.api.ws_routes import router
 
 __all__ = ["router"]
