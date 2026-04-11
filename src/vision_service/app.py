@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from vision_service.api import router
 from vision_service.container import ServiceContainer
-from vision_service.gateway import GatewaySessionController
+from vision_service.gateway.session import GatewaySessionController
 from vision_service.runtime.manager import RuntimeManager
 from vision_service.settings import get_settings
 from vision_service.vision.backend import VisionBackend

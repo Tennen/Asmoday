@@ -1,4 +1,6 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,6 +12,7 @@ from vision_service.settings import Settings
 from vision_service.vision.capture import open_rtsp_capture
 
 logger = logging.getLogger(__name__)
+READ_FAILURE_LOG_INTERVAL = 30
 
 StreamState = Literal["starting", "running", "stopped", "degraded"]
 
@@ -48,6 +51,7 @@ class SharedRTSPStream:
         self._last_error: str | None = None
 
         self._task: asyncio.Task[None] | None = None
+        self._executor: ThreadPoolExecutor | None = None
         self._stop_event = asyncio.Event()
         self._condition = asyncio.Condition()
         self._latest_result: StreamReadResult | None = None
@@ -70,6 +74,11 @@ class SharedRTSPStream:
             return
         self._stop_event.clear()
         self._state = "starting"
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="vision-rtsp",
+            )
         logger.info(
             "starting RTSP stream url=%s rtsp_transport=%s",
             self._url,
@@ -130,9 +139,10 @@ class SharedRTSPStream:
         finally:
             self._task = None
             await self._notify_waiters()
+            await self._shutdown_executor()
 
     async def _run(self) -> None:
-        capture = await asyncio.to_thread(
+        capture = await self._run_capture_call(
             open_rtsp_capture,
             url=self._url,
             settings=self._settings,
@@ -151,20 +161,29 @@ class SharedRTSPStream:
             self._settings.rtsp_transport,
         )
         await self._notify_waiters()
-        read_failure_active = False
+        consecutive_read_failures = 0
+        first_failure_at: datetime | None = None
 
         try:
             while not self._stop_event.is_set():
-                success, frame = await asyncio.to_thread(capture.read)
+                success, frame = await self._run_capture_call(capture.read)
                 observed_at = datetime.now(tz=UTC)
                 if success:
-                    if read_failure_active:
+                    if consecutive_read_failures > 0:
                         logger.info(
-                            "RTSP stream recovered url=%s rtsp_transport=%s",
+                            "RTSP stream recovered url=%s rtsp_transport=%s "
+                            "consecutive_failures=%s outage_seconds=%.3f",
                             self._url,
                             self._settings.rtsp_transport,
+                            consecutive_read_failures,
+                            self._failure_duration_seconds(
+                                first_failure_at=first_failure_at,
+                                observed_at=observed_at,
+                            ),
                         )
-                        read_failure_active = False
+                    consecutive_read_failures = 0
+                    first_failure_at = None
+                    self._state = "running"
                     await self._publish_result(
                         observed_at=observed_at,
                         frame=frame,
@@ -172,13 +191,22 @@ class SharedRTSPStream:
                     )
                     continue
 
-                if not read_failure_active:
+                consecutive_read_failures += 1
+                if first_failure_at is None:
+                    first_failure_at = observed_at
+                self._state = "degraded"
+                if (
+                    consecutive_read_failures == 1
+                    or consecutive_read_failures % READ_FAILURE_LOG_INTERVAL == 0
+                ):
                     logger.warning(
-                        "RTSP frame read failed url=%s rtsp_transport=%s",
+                        "RTSP frame read failed url=%s rtsp_transport=%s "
+                        "consecutive_failures=%s seconds_since_last_frame=%s",
                         self._url,
                         self._settings.rtsp_transport,
+                        consecutive_read_failures,
+                        self._seconds_since_last_frame(observed_at=observed_at),
                     )
-                    read_failure_active = True
                 await self._publish_result(
                     observed_at=observed_at,
                     frame=None,
@@ -189,7 +217,7 @@ class SharedRTSPStream:
                 )
                 await asyncio.sleep(self._settings.frame_failure_backoff_seconds)
         finally:
-            await asyncio.to_thread(capture.release)
+            await self._run_capture_call(capture.release)
 
     async def _publish_result(
         self,
@@ -222,3 +250,35 @@ class SharedRTSPStream:
     async def _notify_waiters(self) -> None:
         async with self._condition:
             self._condition.notify_all()
+
+    def _seconds_since_last_frame(self, *, observed_at: datetime) -> str:
+        if self._last_frame_at is None:
+            return "never"
+        return f"{(observed_at - self._last_frame_at).total_seconds():.3f}"
+
+    @staticmethod
+    def _failure_duration_seconds(
+        *,
+        first_failure_at: datetime | None,
+        observed_at: datetime,
+    ) -> float:
+        if first_failure_at is None:
+            return 0.0
+        return max(0.0, (observed_at - first_failure_at).total_seconds())
+
+    async def _run_capture_call(self, func, /, *args, **kwargs):  # noqa: ANN202
+        loop = asyncio.get_running_loop()
+        executor = self._executor
+        if executor is None:
+            raise RuntimeError("RTSP stream executor is not initialized")
+        return await loop.run_in_executor(
+            executor,
+            partial(func, *args, **kwargs),
+        )
+
+    async def _shutdown_executor(self) -> None:
+        executor = self._executor
+        if executor is None:
+            return
+        self._executor = None
+        await asyncio.to_thread(executor.shutdown, True)
