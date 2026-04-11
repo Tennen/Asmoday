@@ -96,6 +96,11 @@ class GatewaySessionController:
         try:
             envelope = WebSocketEnvelope.model_validate(raw_message)
             request_id = envelope.request_id
+            logger.info(
+                "received websocket message type=%s request_id=%s",
+                envelope.type,
+                request_id,
+            )
 
             if envelope.type == "get_models":
                 response = await self._backend.list_models(
@@ -133,11 +138,26 @@ class GatewaySessionController:
 
             if envelope.type == "sync_config":
                 payload = SyncRequest.model_validate(envelope.payload or {})
+                enabled_rule_count = sum(1 for rule in payload.rules if rule.enabled)
+                logger.info(
+                    "received sync_config request_id=%s sent_at=%s "
+                    "recognition_enabled=%s configured_rules=%s enabled_rules=%s",
+                    request_id,
+                    payload.sent_at.isoformat(),
+                    payload.recognition_enabled,
+                    len(payload.rules),
+                    enabled_rule_count,
+                )
                 await self._manager.apply_config(payload)
                 await transport.send_message(
                     type="sync_applied",
                     request_id=request_id,
                     payload=SyncAppliedPayload.build().model_dump(mode="json"),
+                )
+                logger.info(
+                    "sent sync_applied request_id=%s sent_at=%s",
+                    request_id,
+                    payload.sent_at.isoformat(),
                 )
                 return
 

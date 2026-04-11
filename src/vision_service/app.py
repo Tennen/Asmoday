@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 
 import uvicorn
 from fastapi import FastAPI
@@ -11,9 +12,24 @@ from vision_service.settings import get_settings
 from vision_service.vision.backend import VisionBackend
 
 
+def configure_logging(level_name: str) -> None:
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+    else:
+        root_logger.setLevel(level)
+
+    logging.getLogger("vision_service").setLevel(level)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    configure_logging(settings.log_level)
     backend = VisionBackend(settings)
     manager = RuntimeManager(
         settings=settings,
@@ -51,6 +67,7 @@ def create_app() -> FastAPI:
 
 def main() -> None:
     settings = get_settings()
+    configure_logging(settings.log_level)
     uvicorn.run(
         "vision_service.app:create_app",
         factory=True,

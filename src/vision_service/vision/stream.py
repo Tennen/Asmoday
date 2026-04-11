@@ -169,6 +169,15 @@ class SharedRTSPStream:
                 success, frame = await self._run_capture_call(capture.read)
                 observed_at = datetime.now(tz=UTC)
                 if success:
+                    if self._last_frame_at is None:
+                        logger.info(
+                            "RTSP first frame received url=%s rtsp_transport=%s "
+                            "frame_height=%s frame_width=%s",
+                            self._url,
+                            self._settings.rtsp_transport,
+                            frame.shape[0],
+                            frame.shape[1],
+                        )
                     if consecutive_read_failures > 0:
                         logger.info(
                             "RTSP stream recovered url=%s rtsp_transport=%s "
