@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from functools import partial
 import logging
 from dataclasses import dataclass
@@ -142,17 +143,7 @@ class SharedRTSPStream:
             await self._shutdown_executor()
 
     async def _run(self) -> None:
-        capture = await self._run_capture_call(
-            open_rtsp_capture,
-            url=self._url,
-            settings=self._settings,
-        )
-        if not capture.isOpened():
-            capture.release()
-            raise RuntimeError(
-                "unable to open RTSP stream with "
-                f"rtsp_transport={self._settings.rtsp_transport}"
-            )
+        capture = await self._open_capture()
 
         self._state = "running"
         logger.info(
@@ -162,6 +153,8 @@ class SharedRTSPStream:
         )
         await self._notify_waiters()
         consecutive_read_failures = 0
+        outage_read_failures = 0
+        outage_reconnect_attempts = 0
         first_failure_at: datetime | None = None
 
         try:
@@ -178,19 +171,23 @@ class SharedRTSPStream:
                             frame.shape[0],
                             frame.shape[1],
                         )
-                    if consecutive_read_failures > 0:
+                    if outage_read_failures > 0 or outage_reconnect_attempts > 0:
                         logger.info(
                             "RTSP stream recovered url=%s rtsp_transport=%s "
-                            "consecutive_failures=%s outage_seconds=%.3f",
+                            "read_failures=%s reconnect_attempts=%s "
+                            "outage_seconds=%.3f",
                             self._url,
                             self._settings.rtsp_transport,
-                            consecutive_read_failures,
+                            outage_read_failures,
+                            outage_reconnect_attempts,
                             self._failure_duration_seconds(
                                 first_failure_at=first_failure_at,
                                 observed_at=observed_at,
                             ),
                         )
                     consecutive_read_failures = 0
+                    outage_read_failures = 0
+                    outage_reconnect_attempts = 0
                     first_failure_at = None
                     self._state = "running"
                     await self._publish_result(
@@ -201,9 +198,14 @@ class SharedRTSPStream:
                     continue
 
                 consecutive_read_failures += 1
+                outage_read_failures += 1
                 if first_failure_at is None:
                     first_failure_at = observed_at
                 self._state = "degraded"
+                error_message = (
+                    "failed to read frame from RTSP stream with "
+                    f"rtsp_transport={self._settings.rtsp_transport}"
+                )
                 if (
                     consecutive_read_failures == 1
                     or consecutive_read_failures % READ_FAILURE_LOG_INTERVAL == 0
@@ -219,14 +221,123 @@ class SharedRTSPStream:
                 await self._publish_result(
                     observed_at=observed_at,
                     frame=None,
-                    error=(
-                        "failed to read frame from RTSP stream with "
-                        f"rtsp_transport={self._settings.rtsp_transport}"
+                    error=error_message,
+                )
+                if (
+                    consecutive_read_failures
+                    < self._settings.rtsp_reconnect_failure_threshold
+                ):
+                    await asyncio.sleep(self._settings.frame_failure_backoff_seconds)
+                    continue
+
+                capture, outage_reconnect_attempts = await self._reconnect_capture(
+                    capture=capture,
+                    consecutive_read_failures=consecutive_read_failures,
+                    outage_read_failures=outage_read_failures,
+                    outage_reconnect_attempts=outage_reconnect_attempts,
+                    first_failure_at=first_failure_at,
+                    observed_at=observed_at,
+                )
+                consecutive_read_failures = 0
+                await self._notify_waiters()
+                continue
+        finally:
+            with suppress(Exception):
+                await self._release_capture(capture)
+
+    async def _open_capture(self) -> Any:
+        capture, error = await self._attempt_open_capture()
+        if capture is None:
+            raise RuntimeError(error)
+        return capture
+
+    async def _attempt_open_capture(self) -> tuple[Any | None, str]:
+        try:
+            capture = await self._run_capture_call(
+                open_rtsp_capture,
+                url=self._url,
+                settings=self._settings,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return None, str(exc)
+
+        if capture.isOpened():
+            return capture, ""
+
+        await self._release_capture(capture)
+        return (
+            None,
+            "unable to open RTSP stream with "
+            f"rtsp_transport={self._settings.rtsp_transport}",
+        )
+
+    async def _reconnect_capture(
+        self,
+        *,
+        capture: Any,
+        consecutive_read_failures: int,
+        outage_read_failures: int,
+        outage_reconnect_attempts: int,
+        first_failure_at: datetime | None,
+        observed_at: datetime,
+    ) -> tuple[Any, int]:
+        await self._release_capture(capture)
+        reconnect_attempt = outage_reconnect_attempts
+
+        while reconnect_attempt < self._settings.rtsp_reconnect_max_attempts:
+            reconnect_attempt += 1
+            logger.warning(
+                "RTSP reconnecting url=%s rtsp_transport=%s attempt=%s "
+                "max_attempts=%s consecutive_failures=%s outage_read_failures=%s "
+                "outage_seconds=%.3f",
+                self._url,
+                self._settings.rtsp_transport,
+                reconnect_attempt,
+                self._settings.rtsp_reconnect_max_attempts,
+                consecutive_read_failures,
+                outage_read_failures,
+                self._failure_duration_seconds(
+                    first_failure_at=first_failure_at,
+                    observed_at=observed_at,
+                ),
+            )
+            await asyncio.sleep(self._settings.rtsp_reconnect_backoff_seconds)
+            if self._stop_event.is_set():
+                return capture, reconnect_attempt
+
+            reopened_capture, error = await self._attempt_open_capture()
+            if reopened_capture is not None:
+                logger.info(
+                    "RTSP reconnect opened stream url=%s rtsp_transport=%s "
+                    "attempt=%s outage_seconds=%.3f",
+                    self._url,
+                    self._settings.rtsp_transport,
+                    reconnect_attempt,
+                    self._failure_duration_seconds(
+                        first_failure_at=first_failure_at,
+                        observed_at=datetime.now(tz=UTC),
                     ),
                 )
-                await asyncio.sleep(self._settings.frame_failure_backoff_seconds)
-        finally:
-            await self._run_capture_call(capture.release)
+                return reopened_capture, reconnect_attempt
+
+            logger.warning(
+                "RTSP reconnect attempt failed url=%s rtsp_transport=%s "
+                "attempt=%s max_attempts=%s error=%s",
+                self._url,
+                self._settings.rtsp_transport,
+                reconnect_attempt,
+                self._settings.rtsp_reconnect_max_attempts,
+                error,
+            )
+
+        raise RuntimeError(
+            "unable to reconnect RTSP stream after "
+            f"{self._settings.rtsp_reconnect_max_attempts} attempts with "
+            f"rtsp_transport={self._settings.rtsp_transport}"
+        )
+
+    async def _release_capture(self, capture: Any) -> None:
+        await self._run_capture_call(capture.release)
 
     async def _publish_result(
         self,

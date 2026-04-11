@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     rtsp_transport: Literal["tcp", "udp"] = "tcp"
     rtsp_open_timeout_msec: int = Field(default=10_000, ge=1)
     rtsp_read_timeout_msec: int = Field(default=10_000, ge=1)
+    rtsp_reconnect_failure_threshold: int = Field(default=5, ge=1)
+    rtsp_reconnect_backoff_seconds: float = Field(default=1.0, gt=0)
+    rtsp_reconnect_max_attempts: int = Field(default=3, ge=1)
 
     model_directory: Path = Field(
         default_factory=_default_model_directory,
