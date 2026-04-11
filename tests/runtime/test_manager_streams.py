@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -136,9 +137,14 @@ def build_rule(*, rule_id: str, url: str) -> VisionRule:
     )
 
 
-def build_payload(*, rules: list[VisionRule]) -> SyncRequest:
+def build_payload(
+    *,
+    rules: list[VisionRule],
+    recognition_enabled: bool = True,
+) -> SyncRequest:
     return SyncRequest(
         sent_at=datetime.now(tz=UTC),
+        recognition_enabled=recognition_enabled,
         callbacks=CallbackPaths(
             status_path="/status",
             event_path="/events",
@@ -192,3 +198,21 @@ async def test_manager_stops_unused_streams_after_reconcile() -> None:
 
     assert shared_stream.stopped == 1
     assert len(manager.created_streams) == 2
+
+
+@pytest.mark.asyncio
+async def test_manager_logs_when_sync_has_no_runnable_rules(caplog) -> None:
+    manager = RecordingRuntimeManager()
+    caplog.set_level(logging.INFO, logger="vision_service.runtime.manager")
+
+    await manager.apply_config(
+        build_payload(
+            rules=[build_rule(rule_id="rule-1", url="rtsp://camera/shared")],
+            recognition_enabled=False,
+        )
+    )
+
+    assert len(manager.created_streams) == 0
+    assert len(manager.created_workers) == 0
+    assert "reconciling config sync" in caplog.text
+    assert "config sync left no runnable rules" in caplog.text

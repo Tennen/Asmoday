@@ -85,18 +85,35 @@ class MissingModelBackend(BackendStub):
 
 
 class ManagerStub:
+    def __init__(self) -> None:
+        self.payloads: list[Any] = []
+
     async def apply_config(self, payload: Any) -> None:
-        return None
+        self.payloads.append(payload)
 
 
-def _build_client(backend: Any) -> TestClient:
+def _build_sync_payload() -> dict[str, Any]:
+    return {
+        "sent_at": "2026-04-11T00:00:00Z",
+        "recognition_enabled": True,
+        "callbacks": {
+            "status_path": "/status",
+            "event_path": "/events",
+            "evidence_path": "/evidence",
+        },
+        "rules": [],
+    }
+
+
+def _build_client(backend: Any, manager: ManagerStub | None = None) -> TestClient:
     app = FastAPI()
     app.include_router(router, prefix="/api/v1/capabilities/vision_entity_stay_zone")
+    manager = manager or ManagerStub()
     app.state.container = ServiceContainer(
         settings=SimpleNamespace(service_version="test-version"),
         backend=backend,
         gateway_client=object(),
-        manager=ManagerStub(),
+        manager=manager,
     )
     return TestClient(app)
 
@@ -147,3 +164,18 @@ def test_model_not_found_errors_become_http_404() -> None:
 
     assert response.status_code == 404
     assert "missing.pt" in response.json()["detail"]
+
+
+def test_sync_route_accepts_trailing_slash() -> None:
+    backend = BackendStub()
+    manager = ManagerStub()
+    client = _build_client(backend, manager)
+
+    response = client.put(
+        "/api/v1/capabilities/vision_entity_stay_zone/",
+        json=_build_sync_payload(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert len(manager.payloads) == 1

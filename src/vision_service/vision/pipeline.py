@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Awaitable, Callable, Literal
@@ -11,6 +12,8 @@ from vision_service.runtime.events import EventEvidence, RuleEvent
 from vision_service.settings import Settings
 from vision_service.vision.backend import DetectionBatch, VisionBackend
 from vision_service.vision.stream import FrameStream, StreamReadResult
+
+logger = logging.getLogger(__name__)
 
 WorkerState = Literal["starting", "running", "stopped", "degraded"]
 EmitRuleEvent = Callable[[RuleEvent], Awaitable[str]]
@@ -74,15 +77,34 @@ class RuleVisionWorker:
         if self._task is not None:
             return
         self._stop_event.clear()
+        logger.info(
+            "starting rule worker rule_id=%s camera_device_id=%s "
+            "entity_value=%s stay_threshold_seconds=%s stream_url=%s",
+            self._rule.id,
+            self._rule.camera.device_id,
+            self._rule.entity_selector.value,
+            self._rule.stay_threshold_seconds,
+            self._stream_url(),
+        )
         self._task = asyncio.create_task(self._run_wrapper())
 
     async def stop(self) -> None:
         if self._task is None:
             self._state = "stopped"
+            logger.info(
+                "stopped rule worker rule_id=%s camera_device_id=%s",
+                self._rule.id,
+                self._rule.camera.device_id,
+            )
             return
         self._stop_event.set()
         await self._task
         self._task = None
+        logger.info(
+            "stopped rule worker rule_id=%s camera_device_id=%s",
+            self._rule.id,
+            self._rule.camera.device_id,
+        )
 
     async def _run_wrapper(self) -> None:
         try:
@@ -90,6 +112,12 @@ class RuleVisionWorker:
         except Exception as exc:  # noqa: BLE001
             self._state = "degraded"
             self._last_error = str(exc)
+            logger.exception(
+                "rule worker degraded rule_id=%s camera_device_id=%s stream_url=%s",
+                self._rule.id,
+                self._rule.camera.device_id,
+                self._stream_url(),
+            )
         else:
             self._state = "stopped"
 
@@ -105,6 +133,12 @@ class RuleVisionWorker:
             max_samples=self._settings.evidence_buffer_max_samples,
         )
         self._state = "running"
+        logger.info(
+            "rule worker running rule_id=%s camera_device_id=%s stream_url=%s",
+            self._rule.id,
+            self._rule.camera.device_id,
+            self._stream_url(),
+        )
         last_token: int | None = None
 
         try:
@@ -276,11 +310,35 @@ class RuleVisionWorker:
             )
         except Exception as exc:  # noqa: BLE001
             self._last_error = str(exc)
+            logger.warning(
+                "failed to emit transition rule_id=%s camera_device_id=%s "
+                "status=%s track_id=%s error=%s",
+                self._rule.id,
+                self._rule.camera.device_id,
+                transition.status,
+                transition.track_id,
+                exc,
+            )
             return
 
         self._last_error = None
+        logger.info(
+            "emitted transition rule_id=%s camera_device_id=%s "
+            "status=%s track_id=%s dwell_seconds=%s",
+            self._rule.id,
+            self._rule.camera.device_id,
+            transition.status,
+            transition.track_id,
+            transition.dwell_seconds,
+        )
         if transition.status == "threshold_met":
             self._emitted_threshold_events += 1
             self._active = True
         elif transition.status == "cleared":
             self._active = False
+
+    def _stream_url(self) -> str:
+        stream_url = getattr(self._frame_stream, "url", None)
+        if isinstance(stream_url, str):
+            return stream_url
+        return "<unknown>"

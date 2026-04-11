@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
@@ -7,6 +8,8 @@ import numpy as np
 
 from vision_service.settings import Settings
 from vision_service.vision.capture import open_rtsp_capture
+
+logger = logging.getLogger(__name__)
 
 StreamState = Literal["starting", "running", "stopped", "degraded"]
 
@@ -67,16 +70,23 @@ class SharedRTSPStream:
             return
         self._stop_event.clear()
         self._state = "starting"
+        logger.info(
+            "starting RTSP stream url=%s rtsp_transport=%s",
+            self._url,
+            self._settings.rtsp_transport,
+        )
         self._task = asyncio.create_task(self._run_wrapper())
 
     async def stop(self) -> None:
         if self._task is None:
             self._state = "stopped"
             await self._notify_waiters()
+            logger.info("stopped RTSP stream url=%s", self._url)
             return
 
         self._stop_event.set()
         await self._task
+        logger.info("stopped RTSP stream url=%s", self._url)
 
     async def wait_for_result(
         self,
@@ -109,6 +119,11 @@ class SharedRTSPStream:
         try:
             await self._run()
         except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "RTSP stream degraded url=%s rtsp_transport=%s",
+                self._url,
+                self._settings.rtsp_transport,
+            )
             await self._publish_terminal_error(str(exc))
         else:
             self._state = "stopped"
@@ -130,13 +145,26 @@ class SharedRTSPStream:
             )
 
         self._state = "running"
+        logger.info(
+            "RTSP stream running url=%s rtsp_transport=%s",
+            self._url,
+            self._settings.rtsp_transport,
+        )
         await self._notify_waiters()
+        read_failure_active = False
 
         try:
             while not self._stop_event.is_set():
                 success, frame = await asyncio.to_thread(capture.read)
                 observed_at = datetime.now(tz=UTC)
                 if success:
+                    if read_failure_active:
+                        logger.info(
+                            "RTSP stream recovered url=%s rtsp_transport=%s",
+                            self._url,
+                            self._settings.rtsp_transport,
+                        )
+                        read_failure_active = False
                     await self._publish_result(
                         observed_at=observed_at,
                         frame=frame,
@@ -144,6 +172,13 @@ class SharedRTSPStream:
                     )
                     continue
 
+                if not read_failure_active:
+                    logger.warning(
+                        "RTSP frame read failed url=%s rtsp_transport=%s",
+                        self._url,
+                        self._settings.rtsp_transport,
+                    )
+                    read_failure_active = True
                 await self._publish_result(
                     observed_at=observed_at,
                     frame=None,

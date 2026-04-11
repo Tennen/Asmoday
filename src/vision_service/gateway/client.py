@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import Any
 
 import httpx
@@ -9,6 +10,8 @@ from vision_service.contracts import (
     RuntimeStatusPayload,
 )
 from vision_service.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class CallbackDeliveryError(RuntimeError):
@@ -82,9 +85,26 @@ class GatewayCallbackClient:
             try:
                 response = await client.post(normalized_path, json=payload)
                 response.raise_for_status()
+                if attempt > 1:
+                    logger.info(
+                        "gateway callback recovered label=%s callback_path=%s "
+                        "attempt=%s",
+                        label,
+                        callback_path,
+                        attempt,
+                    )
                 return
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
+                logger.warning(
+                    "gateway callback failed label=%s callback_path=%s "
+                    "attempt=%s/%s error=%s",
+                    label,
+                    callback_path,
+                    attempt,
+                    self._settings.callback_max_attempts,
+                    exc,
+                )
                 if attempt == self._settings.callback_max_attempts:
                     break
                 await asyncio.sleep(

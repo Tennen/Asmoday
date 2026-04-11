@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from base64 import b64encode
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -19,6 +20,8 @@ from vision_service.settings import Settings
 from vision_service.vision.backend import VisionBackend
 from vision_service.vision.pipeline import RuleVisionWorker
 from vision_service.vision.stream import FrameStream, SharedRTSPStream
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeManager:
@@ -44,6 +47,10 @@ class RuntimeManager:
         await self._gateway_client.start()
         if self._status_task is None:
             self._status_task = asyncio.create_task(self._status_loop())
+            logger.info(
+                "runtime manager started status_interval_seconds=%s",
+                self._settings.status_interval_seconds,
+            )
 
     async def stop(self) -> None:
         if self._status_task is not None:
@@ -60,6 +67,7 @@ class RuntimeManager:
         for stream in streams:
             await stream.stop()
         await self._gateway_client.stop()
+        logger.info("runtime manager stopped")
 
     async def apply_config(self, payload: SyncRequest) -> None:
         async with self._reconcile_lock:
@@ -67,8 +75,39 @@ class RuntimeManager:
                 payload=payload,
             )
             desired_rules = self._enabled_rules(payload)
+            enabled_rule_count = sum(1 for rule in payload.rules if rule.enabled)
+
+            logger.info(
+                "reconciling config sync sent_at=%s recognition_enabled=%s "
+                "configured_rules=%s enabled_rules=%s runnable_rules=%s "
+                "workers_to_keep=%s workers_to_stop=%s workers_to_start=%s",
+                payload.sent_at.isoformat(),
+                payload.recognition_enabled,
+                len(payload.rules),
+                enabled_rule_count,
+                len(desired_rules),
+                len(workers_to_keep),
+                len(workers_to_stop),
+                len(workers_to_start),
+            )
+            if not desired_rules:
+                logger.info(
+                    "config sync left no runnable rules sent_at=%s "
+                    "recognition_enabled=%s configured_rules=%s enabled_rules=%s",
+                    payload.sent_at.isoformat(),
+                    payload.recognition_enabled,
+                    len(payload.rules),
+                    enabled_rule_count,
+                )
 
             for worker in workers_to_stop:
+                snapshot = worker.snapshot()
+                logger.info(
+                    "stopping rule worker due to config change rule_id=%s "
+                    "camera_device_id=%s",
+                    snapshot.rule_id,
+                    snapshot.camera_device_id,
+                )
                 await worker.stop()
 
             reconciled_streams, streams_to_start, streams_to_stop = (
@@ -76,6 +115,10 @@ class RuntimeManager:
             )
 
             for stream in streams_to_stop:
+                logger.info(
+                    "stopping unused RTSP stream url=%s",
+                    stream.url,
+                )
                 await stream.stop()
             for stream in streams_to_start:
                 await stream.start()
@@ -88,6 +131,15 @@ class RuntimeManager:
                 self._last_delivery_error = None
 
                 for rule in workers_to_start:
+                    logger.info(
+                        "creating rule worker rule_id=%s camera_device_id=%s "
+                        "entity_value=%s stay_threshold_seconds=%s stream_url=%s",
+                        rule.id,
+                        rule.camera.device_id,
+                        rule.entity_selector.value,
+                        rule.stay_threshold_seconds,
+                        rule.rtsp_source.url,
+                    )
                     self._workers[rule.id] = self._create_worker(
                         rule=rule,
                         frame_stream=self._streams[self._stream_key_for_rule(rule)],
@@ -100,6 +152,19 @@ class RuntimeManager:
 
             for worker in new_workers:
                 await worker.start()
+
+            logger.info(
+                "config sync applied sent_at=%s active_workers=%s active_streams=%s "
+                "started_workers=%s stopped_workers=%s started_streams=%s "
+                "stopped_streams=%s",
+                payload.sent_at.isoformat(),
+                len(workers_to_keep) + len(new_workers),
+                len(reconciled_streams),
+                len(new_workers),
+                len(workers_to_stop),
+                len(streams_to_start),
+                len(streams_to_stop),
+            )
 
         try:
             await self.report_status()
@@ -215,6 +280,11 @@ class RuntimeManager:
                 payload=status_payload,
             )
         except CallbackDeliveryError as exc:
+            logger.warning(
+                "status callback delivery failed callback_path=%s error=%s",
+                callback_path,
+                exc,
+            )
             async with self._lock:
                 self._last_delivery_error = str(exc)
             raise
@@ -269,12 +339,31 @@ class RuntimeManager:
                     ),
                 )
         except CallbackDeliveryError as exc:
+            logger.warning(
+                "rule event delivery failed rule_id=%s camera_device_id=%s "
+                "event_id=%s status=%s error=%s",
+                event.rule_id,
+                event.camera_device_id,
+                event_id,
+                event.status,
+                exc,
+            )
             async with self._lock:
                 self._last_delivery_error = str(exc)
             raise
 
         async with self._lock:
             self._last_delivery_error = None
+        logger.info(
+            "delivered rule event rule_id=%s camera_device_id=%s event_id=%s "
+            "status=%s dwell_seconds=%s evidence_captures=%s",
+            event.rule_id,
+            event.camera_device_id,
+            event_id,
+            event.status,
+            event.dwell_seconds,
+            len(event.evidence),
+        )
         return event_id
 
     async def _status_callback_path(self) -> str | None:
