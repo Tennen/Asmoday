@@ -1,6 +1,6 @@
 # Vision Service WebSocket Contract
 
-This document is the integration contract between Gateway and the standalone Vision Service for the `vision_entity_stay_zone` capability.
+This document is the integration contract between Gateway and the standalone Vision Service control session.
 
 ## Overview
 
@@ -23,10 +23,10 @@ Implications:
 Gateway connects to:
 
 ```text
-ws://{vision_service_host}:{port}/api/v1/capabilities/vision_entity_stay_zone
+ws://{vision_service_host}:{port}/ws/control
 ```
 
-The route path is configurable with `VISION_SERVICE_GATEWAY_WS_PATH`.
+The route path is configurable with `VISION_SERVICE_CONTROL_WS_PATH`.
 
 Current server behavior:
 

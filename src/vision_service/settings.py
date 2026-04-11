@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     service_name: str = "vision-service"
     service_version: str = "0.1.0"
-    gateway_ws_path: str = "/api/v1/capabilities/vision_entity_stay_zone"
+    control_ws_path: str = "/ws/control"
 
     host: str = "0.0.0.0"
     port: int = 8081

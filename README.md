@@ -1,6 +1,6 @@
 # Vision Service
 
-Python Vision Service for Gateway's `vision_entity_stay_zone` capability.
+Python Vision Service for Gateway-controlled RTSP recognition.
 
 ## Scope
 
@@ -33,8 +33,8 @@ Environment variables use the `VISION_SERVICE_` prefix.
 
 ## Important Settings
 
-- `VISION_SERVICE_GATEWAY_WS_PATH`
-  WebSocket route exposed to Gateway. Defaults to `/api/v1/capabilities/vision_entity_stay_zone`.
+- `VISION_SERVICE_CONTROL_WS_PATH`
+  WebSocket control route exposed to Gateway. Defaults to `/ws/control`.
 - `VISION_SERVICE_STATUS_INTERVAL_SECONDS`
   Periodic runtime status push interval while a Gateway session is connected.
 - `VISION_SERVICE_WEBSOCKET_MAX_MESSAGE_BYTES`
@@ -57,7 +57,7 @@ Environment variables use the `VISION_SERVICE_` prefix.
 Gateway connects to:
 
 ```text
-ws://{vision-service-host}:{port}/api/v1/capabilities/vision_entity_stay_zone
+ws://{vision-service-host}:{port}/ws/control
 ```
 
 The server accepts one Gateway session at a time. On connect it sends:

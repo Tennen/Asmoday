@@ -73,7 +73,7 @@ class BackendStub:
 
 def _build_client() -> tuple[TestClient, BackendStub]:
     settings = Settings(
-        gateway_ws_path="/api/v1/capabilities/vision_entity_stay_zone",
+        control_ws_path="/ws/control",
         status_interval_seconds=3600,
     )
     backend = BackendStub()
@@ -85,7 +85,7 @@ def _build_client() -> tuple[TestClient, BackendStub]:
     )
 
     app = FastAPI()
-    app.include_router(router, prefix=settings.gateway_ws_path)
+    app.include_router(router, prefix=settings.control_ws_path)
     app.state.container = ServiceContainer(
         settings=settings,
         backend=backend,
@@ -98,7 +98,7 @@ def _build_client() -> tuple[TestClient, BackendStub]:
 def test_websocket_session_supports_query_commands_and_sync() -> None:
     client, backend = _build_client()
 
-    with client.websocket_connect("/api/v1/capabilities/vision_entity_stay_zone") as ws:
+    with client.websocket_connect("/ws/control") as ws:
         hello = ws.receive_json()
         initial_status = ws.receive_json()
 
@@ -162,7 +162,7 @@ def test_websocket_session_supports_query_commands_and_sync() -> None:
 def test_websocket_session_reports_protocol_errors() -> None:
     client, _ = _build_client()
 
-    with client.websocket_connect("/api/v1/capabilities/vision_entity_stay_zone") as ws:
+    with client.websocket_connect("/ws/control") as ws:
         ws.receive_json()
         ws.receive_json()
 

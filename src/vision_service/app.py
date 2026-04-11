@@ -45,7 +45,7 @@ def create_app() -> FastAPI:
         version=settings.service_version,
         lifespan=lifespan,
     )
-    app.include_router(router, prefix=settings.gateway_ws_path)
+    app.include_router(router, prefix=settings.control_ws_path)
     return app
 
 
