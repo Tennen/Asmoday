@@ -55,12 +55,13 @@ def build_worker(
     *,
     entity_value: str,
     emit_rule_event,
+    frame_stream: object | None = None,
 ) -> RuleVisionWorker:
     return RuleVisionWorker(
         rule=build_rule(entity_value=entity_value),
         settings=Settings(),
         emit_rule_event=emit_rule_event,
-        frame_stream=DummyStream(),
+        frame_stream=frame_stream or DummyStream(),
     )
 
 
@@ -157,6 +158,23 @@ def test_visible_tracks_in_zone_skips_encoding_when_no_detection_is_in_zone(
     assert observation.visible_tracks == {}
     assert observation.track_entities == {}
     assert observation.entities == ()
+
+
+def test_stream_url_falls_back_to_rule_rtsp_source_when_frame_stream_has_no_url() -> None:
+    async def emit_rule_event(event):  # noqa: ANN001, ANN202
+        return "unused"
+
+    class StreamWithoutUrl:
+        async def wait_for_result(self, *, after_token: int | None):  # noqa: ANN202
+            return None
+
+    worker = build_worker(
+        entity_value="cat",
+        emit_rule_event=emit_rule_event,
+        frame_stream=StreamWithoutUrl(),
+    )
+
+    assert worker._stream_url() == "rtsp://camera/test"
 
 
 @pytest.mark.asyncio

@@ -457,6 +457,9 @@ class RuleVisionWorker:
             self._emitted_threshold_events += 1
 
     def _stream_url(self) -> str:
+        stream_url = self._rule.rtsp_source.url
+        if isinstance(stream_url, str) and stream_url:
+            return stream_url
         stream_url = getattr(self._frame_stream, "url", None)
         if isinstance(stream_url, str):
             return stream_url
