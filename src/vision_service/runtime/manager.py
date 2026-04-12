@@ -16,6 +16,7 @@ from vision_service.runtime.telemetry import (
     build_event_callback_payload,
 )
 from vision_service.settings import Settings
+from vision_service.vision.analysis import AnalyzedFrameStream, SharedInferenceStream
 from vision_service.vision.backend import VisionBackend
 from vision_service.vision.pipeline import RuleVisionWorker
 from vision_service.vision.stream import FrameStream, SharedRTSPStream
@@ -41,6 +42,7 @@ class RuntimeManager:
         self._accepting_telemetry = False
         self._workers: dict[str, RuleVisionWorker] = {}
         self._streams: dict[str, SharedRTSPStream] = {}
+        self._analysis_streams: dict[str, SharedInferenceStream] = {}
 
     async def start(self) -> None:
         if self._status_task is None:
@@ -88,6 +90,7 @@ class RuntimeManager:
                 self._last_delivery_error = None
                 self._workers = {}
                 self._streams = {}
+                self._analysis_streams = {}
 
         logger.info(
             "cleared runtime session reason=%s stopped_workers=%s stopped_streams=%s",
@@ -151,6 +154,9 @@ class RuntimeManager:
                 self._desired_state = payload.model_copy(deep=True)
                 self._workers = {worker.rule_id: worker for worker in workers_to_keep}
                 self._streams = reconciled_streams
+                self._analysis_streams = self._reconcile_analysis_streams(
+                    streams=reconciled_streams,
+                )
                 self._last_runtime_error = None
                 self._last_delivery_error = None
 
@@ -166,7 +172,9 @@ class RuntimeManager:
                     )
                     self._workers[rule.id] = self._create_worker(
                         rule=rule,
-                        frame_stream=self._streams[self._stream_key_for_rule(rule)],
+                        frame_stream=self._analysis_streams[
+                            self._stream_key_for_rule(rule)
+                        ],
                     )
 
                 new_workers = [self._workers[rule.id] for rule in workers_to_start]
@@ -444,15 +452,35 @@ class RuntimeManager:
     def _create_stream(self, *, url: str) -> SharedRTSPStream:
         return SharedRTSPStream(url=url, settings=self._settings)
 
+    def _reconcile_analysis_streams(
+        self,
+        *,
+        streams: dict[str, SharedRTSPStream],
+    ) -> dict[str, SharedInferenceStream]:
+        return {
+            stream_key: self._analysis_streams.get(stream_key)
+            or self._create_analysis_stream(frame_stream=stream)
+            for stream_key, stream in streams.items()
+        }
+
+    def _create_analysis_stream(
+        self,
+        *,
+        frame_stream: FrameStream,
+    ) -> SharedInferenceStream:
+        return SharedInferenceStream(
+            frame_stream=frame_stream,
+            backend=self._backend,
+        )
+
     def _create_worker(
         self,
         *,
         rule: VisionRule,
-        frame_stream: FrameStream,
+        frame_stream: AnalyzedFrameStream,
     ) -> RuleVisionWorker:
         return RuleVisionWorker(
             rule=rule,
-            backend=self._backend,
             settings=self._settings,
             emit_rule_event=self.report_rule_event,
             frame_stream=frame_stream,

@@ -14,6 +14,7 @@ from vision_service.contracts import (
 )
 from vision_service.runtime.manager import RuntimeManager
 from vision_service.settings import Settings
+from vision_service.vision.analysis import AnalyzedFrameResult
 from vision_service.vision.stream import StreamReadResult, StreamSnapshot
 
 
@@ -49,7 +50,7 @@ class FakeStream:
 @dataclass
 class FakeWorker:
     rule: VisionRule
-    frame_stream: FakeStream
+    frame_stream: object
     started: int = 0
     stopped: int = 0
 
@@ -80,6 +81,18 @@ class FakeWorker:
         self.stopped += 1
 
 
+@dataclass
+class FakeAnalysisStream:
+    frame_stream: FakeStream
+
+    async def wait_for_result(
+        self,
+        *,
+        after_token: int | None,
+    ) -> AnalyzedFrameResult | None:
+        return None
+
+
 class RecordingRuntimeManager(RuntimeManager):
     def __init__(self) -> None:
         super().__init__(
@@ -87,6 +100,7 @@ class RecordingRuntimeManager(RuntimeManager):
             backend=FakeBackend(),
         )
         self.created_streams: list[FakeStream] = []
+        self.created_analysis_streams: list[FakeAnalysisStream] = []
         self.created_workers: list[FakeWorker] = []
 
     def _create_stream(self, *, url: str) -> FakeStream:  # type: ignore[override]
@@ -94,11 +108,20 @@ class RecordingRuntimeManager(RuntimeManager):
         self.created_streams.append(stream)
         return stream
 
+    def _create_analysis_stream(  # type: ignore[override]
+        self,
+        *,
+        frame_stream: FakeStream,
+    ) -> FakeAnalysisStream:
+        analysis_stream = FakeAnalysisStream(frame_stream=frame_stream)
+        self.created_analysis_streams.append(analysis_stream)
+        return analysis_stream
+
     def _create_worker(  # type: ignore[override]
         self,
         *,
         rule: VisionRule,
-        frame_stream: FakeStream,
+        frame_stream: FakeAnalysisStream,
     ) -> FakeWorker:
         worker = FakeWorker(rule=rule, frame_stream=frame_stream)
         self.created_workers.append(worker)
@@ -144,6 +167,7 @@ async def test_manager_reuses_single_stream_for_rules_with_same_url() -> None:
     await manager.apply_config(payload)
 
     assert len(manager.created_streams) == 1
+    assert len(manager.created_analysis_streams) == 1
     assert len(manager.created_workers) == 2
     assert manager.created_workers[0].frame_stream is manager.created_workers[1].frame_stream
 

@@ -20,6 +20,27 @@ class DetectionBatch:
     detections: Any
     labels: dict[int, str]
 
+    @classmethod
+    def from_result(
+        cls,
+        *,
+        result: Any,
+        labels: dict[int, str],
+    ) -> "DetectionBatch":
+        import supervision as sv
+
+        return cls(
+            result=result,
+            detections=sv.Detections.from_ultralytics(result),
+            labels=dict(labels),
+        )
+
+    def clone(self) -> "DetectionBatch":
+        return self.from_result(
+            result=self.result,
+            labels=self.labels,
+        )
+
 
 @dataclass(slots=True, frozen=True)
 class ModelRecord:
@@ -129,12 +150,8 @@ class VisionBackend:
     async def detect(self, frame: Any) -> DetectionBatch:
         _, model = await self._get_model_bundle(model_name=None)
         result = await asyncio.to_thread(self._predict, model, frame)
-
-        import supervision as sv
-
-        return DetectionBatch(
+        return DetectionBatch.from_result(
             result=result,
-            detections=sv.Detections.from_ultralytics(result),
             labels=self._iter_model_names(model),
         )
 

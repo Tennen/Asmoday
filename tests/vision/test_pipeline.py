@@ -18,11 +18,6 @@ from vision_service.vision.entities import TransitionContext
 from vision_service.vision.pipeline import RuleVisionWorker
 
 
-class DummyBackend:
-    async def detect(self, frame):  # noqa: ANN001, ANN201
-        raise AssertionError("not used in pipeline unit tests")
-
-
 class DummyStream:
     url = "rtsp://camera/test"
 
@@ -63,7 +58,6 @@ def build_worker(
 ) -> RuleVisionWorker:
     return RuleVisionWorker(
         rule=build_rule(entity_value=entity_value),
-        backend=DummyBackend(),
         settings=Settings(),
         emit_rule_event=emit_rule_event,
         frame_stream=DummyStream(),
@@ -126,6 +120,43 @@ def test_encode_annotated_frame_filters_result_boxes_before_plot(
     assert fake_result.clone.last_plot_kwargs["labels"] is True
     assert fake_result.clone.last_plot_kwargs["masks"] is False
     assert fake_result.clone.last_plot_kwargs["probs"] is False
+
+
+def test_visible_tracks_in_zone_skips_encoding_when_no_detection_is_in_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def emit_rule_event(event):  # noqa: ANN001, ANN202
+        return "unused"
+
+    worker = build_worker(entity_value="cat", emit_rule_event=emit_rule_event)
+    monkeypatch.setattr(
+        worker,
+        "_encode_annotated_frame",
+        lambda **kwargs: pytest.fail("encoding should be skipped"),
+    )
+    detections = sv.Detections(
+        xyxy=np.array([[0, 0, 1, 1]], dtype=np.float32),
+        confidence=np.array([0.9], dtype=np.float32),
+        class_id=np.array([0], dtype=np.int32),
+        tracker_id=np.array([7], dtype=np.int32),
+    )
+    batch = DetectionBatch(
+        result=FakeResult(np.array(["cat-box"], dtype=object)),
+        detections=detections,
+        labels={0: "cat"},
+    )
+
+    observation = worker._visible_tracks_in_zone(
+        detections=detections,
+        frame=np.zeros((10, 10, 3), dtype=np.uint8),
+        labels=batch.labels,
+        batch=batch,
+        class_mask=np.array([True], dtype=bool),
+    )
+
+    assert observation.visible_tracks == {}
+    assert observation.track_entities == {}
+    assert observation.entities == ()
 
 
 @pytest.mark.asyncio
