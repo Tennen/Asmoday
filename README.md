@@ -26,10 +26,29 @@ The integration contract is documented in [vision-service-contract.md](./vision-
 
 ```bash
 uv sync --extra dev
+cp .env.example .env
 uv run vision-service
 ```
 
 Environment variables use the `VISION_SERVICE_` prefix.
+
+## Environment Management
+
+The service already loads environment files automatically through Pydantic Settings:
+
+- `.env`
+  Project-local defaults you want the app to read without `export`.
+- `.env.local`
+  Machine-specific overrides. This is useful when your personal RTSP endpoints, ports, or debug settings differ from the shared default file.
+- Real environment variables
+  Still take precedence over values from `.env` files when you need a one-off override.
+
+Recommended workflow:
+
+1. Copy `.env.example` to `.env`.
+2. Put safe shared local defaults in `.env`.
+3. Put personal overrides in `.env.local`.
+4. Run `uv run vision-service` directly without extra `export` commands.
 
 ## Important Settings
 

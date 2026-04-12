@@ -13,7 +13,7 @@ def _default_model_directory() -> Path:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="VISION_SERVICE_",
-        env_file=".env",
+        env_file=(".env", ".env.local"),
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
