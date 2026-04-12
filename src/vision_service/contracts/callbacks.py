@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from vision_service.contracts.catalog import EntityDescriptor
+
 
 ServiceStatus = Literal["unknown", "healthy", "degraded", "unhealthy", "stopped"]
 RuleEventStatus = Literal["threshold_met", "cleared"]
@@ -29,6 +31,7 @@ class EventRecord(BaseModel):
     observed_at: datetime
     dwell_seconds: int = Field(ge=0)
     entity_value: str | None = None
+    entities: list[EntityDescriptor] | None = None
     metadata: dict[str, Any] | None = None
 
 
@@ -49,6 +52,7 @@ class EvidenceCapture(BaseModel):
     captured_at: datetime
     content_type: str | None = "image/jpeg"
     image_base64: str = Field(min_length=1)
+    metadata: dict[str, Any] | None = None
 
 
 class EvidenceCallbackPayload(BaseModel):

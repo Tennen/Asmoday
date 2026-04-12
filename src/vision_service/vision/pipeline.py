@@ -6,11 +6,20 @@ from typing import Any, Awaitable, Callable, Literal
 
 import numpy as np
 
-from vision_service.contracts import VisionRule
+from vision_service.contracts import EntityDescriptor, VisionRule
 from vision_service.runtime.dwell import DwellTransition, RuleDwellTracker
 from vision_service.runtime.events import EventEvidence, RuleEvent
 from vision_service.settings import Settings
 from vision_service.vision.backend import DetectionBatch, VisionBackend
+from vision_service.vision.entities import (
+    TransitionContext,
+    ZoneObservation,
+    build_transition_context,
+    dedupe_entities,
+    default_entity_for_rule,
+    entity_descriptor_for_detection,
+    evidence_metadata,
+)
 from vision_service.vision.stream import FrameStream, StreamReadResult
 
 logger = logging.getLogger(__name__)
@@ -51,6 +60,9 @@ class RuleVisionWorker:
         self._last_frame_at: datetime | None = None
         self._last_error: str | None = None
         self._emitted_threshold_events = 0
+        self._default_entity = default_entity_for_rule(self._rule)
+        self._current_track_entities: dict[int, EntityDescriptor] = {}
+        self._current_zone_entities: tuple[EntityDescriptor, ...] = ()
 
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -154,13 +166,22 @@ class RuleVisionWorker:
                         observed_at=result.observed_at,
                         visible_tracks={},
                     )
+                    context = build_transition_context(
+                        transition=transition,
+                        current_track_entities={},
+                        removed_track_entities=self._current_track_entities,
+                        current_entities=(),
+                        default_entity=self._default_entity,
+                    )
+                    self._current_track_entities = {}
+                    self._current_zone_entities = ()
                     if transition is not None:
-                        await self._emit_transition(transition)
+                        await self._emit_transition(transition, context=context)
                     continue
 
                 observed_at = result.observed_at
                 self._last_error = None
-                transition = await self._process_frame(
+                transition, context = await self._process_frame(
                     tracker=tracker,
                     frame=result.frame,
                     observed_at=observed_at,
@@ -169,12 +190,21 @@ class RuleVisionWorker:
                 self._active = dwell_tracker.active
                 self._last_frame_at = observed_at
                 if transition is not None:
-                    await self._emit_transition(transition)
+                    await self._emit_transition(transition, context=context)
                 await asyncio.sleep(self._settings.idle_sleep_seconds)
         finally:
             transition = dwell_tracker.force_clear(observed_at=datetime.now(tz=UTC))
+            context = build_transition_context(
+                transition=transition,
+                current_track_entities=self._current_track_entities,
+                removed_track_entities={},
+                current_entities=self._current_zone_entities,
+                default_entity=self._default_entity,
+            )
             if transition is not None:
-                await self._emit_transition(transition)
+                await self._emit_transition(transition, context=context)
+            self._current_track_entities = {}
+            self._current_zone_entities = ()
             self._active = False
 
     async def _wait_for_stream_result(
@@ -209,23 +239,52 @@ class RuleVisionWorker:
         frame: np.ndarray[Any, Any],
         observed_at: datetime,
         dwell_tracker: RuleDwellTracker,
-    ) -> DwellTransition | None:
+    ) -> tuple[DwellTransition | None, TransitionContext]:
         batch = await self._backend.detect(frame)
-        target_detections = self._select_target_detections(batch)
+        target_detections, class_mask = self._select_target_detections(batch)
+        encoded_frame = self._encode_annotated_frame(
+            batch=batch,
+            frame=frame,
+            class_mask=class_mask,
+        )
         tracked_detections = tracker.update_with_detections(target_detections)
-        visible_tracks = self._visible_tracks_in_zone(
+        zone_observation = self._visible_tracks_in_zone(
             detections=tracked_detections,
             frame=frame,
+            labels=batch.labels,
+            encoded_frame=encoded_frame,
         )
-        return dwell_tracker.observe(
+        previous_track_entities = dict(self._current_track_entities)
+        transition = dwell_tracker.observe(
             observed_at=observed_at,
-            visible_tracks=visible_tracks,
+            visible_tracks=zone_observation.visible_tracks,
+        )
+        removed_track_entities = {
+            track_id: entity
+            for track_id, entity in previous_track_entities.items()
+            if track_id not in zone_observation.track_entities
+        }
+        self._current_track_entities = zone_observation.track_entities
+        self._current_zone_entities = zone_observation.entities
+        return transition, build_transition_context(
+            transition=transition,
+            current_track_entities=zone_observation.track_entities,
+            removed_track_entities=removed_track_entities,
+            current_entities=zone_observation.entities,
+            default_entity=self._default_entity,
         )
 
-    def _select_target_detections(self, batch: DetectionBatch) -> Any:
+    def _select_target_detections(
+        self,
+        batch: DetectionBatch,
+    ) -> tuple[Any, np.ndarray[Any, Any] | None]:
         detections = batch.detections
-        if len(detections) == 0 or detections.class_id is None:
-            return detections
+        if (
+            len(detections) == 0
+            or detections.class_id is None
+            or self._rule.entity_selector.value == ""
+        ):
+            return detections, None
 
         mask = np.array(
             [
@@ -234,16 +293,22 @@ class RuleVisionWorker:
             ],
             dtype=bool,
         )
-        return detections[mask]
+        return detections[mask], mask
 
     def _visible_tracks_in_zone(
         self,
         *,
         detections: Any,
         frame: np.ndarray[Any, Any],
-    ) -> dict[int, bytes]:
+        labels: dict[int, str],
+        encoded_frame: bytes,
+    ) -> ZoneObservation:
         if len(detections) == 0 or detections.tracker_id is None:
-            return {}
+            return ZoneObservation(
+                visible_tracks={},
+                track_entities={},
+                entities=(),
+            )
 
         frame_height, frame_width = frame.shape[:2]
         zone_left = self._rule.zone.x * frame_width
@@ -251,20 +316,56 @@ class RuleVisionWorker:
         zone_right = zone_left + (self._rule.zone.width * frame_width)
         zone_bottom = zone_top + (self._rule.zone.height * frame_height)
 
-        track_ids: list[int] = []
-        for bounding_box, tracker_id in zip(detections.xyxy, detections.tracker_id):
+        visible_tracks: dict[int, bytes] = {}
+        track_entities: dict[int, EntityDescriptor] = {}
+        class_ids = detections.class_id
+
+        for index, (bounding_box, tracker_id) in enumerate(
+            zip(detections.xyxy, detections.tracker_id)
+        ):
             if tracker_id is None:
                 continue
             center_x = float((bounding_box[0] + bounding_box[2]) / 2.0)
             center_y = float((bounding_box[1] + bounding_box[3]) / 2.0)
             if zone_left <= center_x <= zone_right and zone_top <= center_y <= zone_bottom:
-                track_ids.append(int(tracker_id))
+                track_id = int(tracker_id)
+                visible_tracks[track_id] = encoded_frame
+                track_entities[track_id] = entity_descriptor_for_detection(
+                    class_id=(
+                        int(class_ids[index])
+                        if class_ids is not None
+                        else None
+                    ),
+                    labels=labels,
+                    default_entity=self._default_entity,
+                )
 
-        if not track_ids:
-            return {}
+        return ZoneObservation(
+            visible_tracks=visible_tracks,
+            track_entities=track_entities,
+            entities=dedupe_entities(track_entities.values()),
+        )
 
-        encoded_frame = self._encode_frame(frame)
-        return {track_id: encoded_frame for track_id in track_ids}
+    def _encode_annotated_frame(
+        self,
+        *,
+        batch: DetectionBatch,
+        frame: np.ndarray[Any, Any],
+        class_mask: np.ndarray[Any, Any] | None,
+    ) -> bytes:
+        plot_result = batch.result
+        if class_mask is not None and getattr(batch.result, "boxes", None) is not None:
+            plot_result = batch.result.new()
+            plot_result.boxes = batch.result.boxes[class_mask]
+
+        annotated_frame = plot_result.plot(
+            img=frame,
+            boxes=True,
+            labels=True,
+            masks=False,
+            probs=False,
+        )
+        return self._encode_frame(annotated_frame)
 
     def _encode_frame(self, frame: np.ndarray[Any, Any]) -> bytes:
         import cv2
@@ -278,7 +379,12 @@ class RuleVisionWorker:
             raise RuntimeError("failed to encode evidence frame")
         return buffer.tobytes()
 
-    async def _emit_transition(self, transition: DwellTransition) -> None:
+    async def _emit_transition(
+        self,
+        transition: DwellTransition,
+        *,
+        context: TransitionContext,
+    ) -> None:
         evidence: tuple[EventEvidence, ...] = ()
         if transition.status == "threshold_met" and transition.evidence_samples:
             phases = ("start", "middle", "end")
@@ -287,6 +393,7 @@ class RuleVisionWorker:
                     phase=phase,
                     captured_at=sample.captured_at,
                     image_bytes=sample.image_bytes,
+                    metadata=evidence_metadata(),
                 )
                 for phase, sample in zip(phases, transition.evidence_samples)
             )
@@ -299,7 +406,12 @@ class RuleVisionWorker:
                     status=transition.status,
                     observed_at=transition.observed_at,
                     dwell_seconds=transition.dwell_seconds,
-                    entity_value=self._rule.entity_selector.value,
+                    entity_value=(
+                        context.primary_entity.value
+                        if context.primary_entity is not None
+                        else None
+                    ),
+                    entities=context.entities,
                     metadata=(
                         {"track_id": str(transition.track_id)}
                         if transition.track_id is not None

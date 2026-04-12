@@ -24,7 +24,7 @@ class EntitySelector(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["label"] = "label"
-    value: str = Field(min_length=1)
+    value: str
 
 
 class ZoneRect(BaseModel):

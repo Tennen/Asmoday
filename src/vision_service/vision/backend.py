@@ -16,6 +16,7 @@ from vision_service.settings import Settings
 
 @dataclass(slots=True, frozen=True)
 class DetectionBatch:
+    result: Any
     detections: Any
     labels: dict[int, str]
 
@@ -132,6 +133,7 @@ class VisionBackend:
         import supervision as sv
 
         return DetectionBatch(
+            result=result,
             detections=sv.Detections.from_ultralytics(result),
             labels=self._iter_model_names(model),
         )

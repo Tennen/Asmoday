@@ -129,9 +129,21 @@ Sent once after a dwell episode ends and the completed stay exceeded the configu
         "rule_id": "feeder-zone",
         "camera_device_id": "hikvision:camera:entry-1",
         "status": "threshold_met",
-        "observed_at": "2026-04-11T08:00:18Z",
-        "dwell_seconds": 13,
+        "observed_at": "2026-04-11T08:00:10Z",
+        "dwell_seconds": 5,
         "entity_value": "cat",
+        "entities": [
+          {
+            "kind": "label",
+            "value": "cat",
+            "display_name": "Cat"
+          },
+          {
+            "kind": "label",
+            "value": "dog",
+            "display_name": "Dog"
+          }
+        ],
         "metadata": {
           "track_id": "7"
         }
@@ -140,6 +152,14 @@ Sent once after a dwell episode ends and the completed stay exceeded the configu
   }
 }
 ```
+
+`rule_events` entity semantics:
+
+- `entity_value` remains the backward-compatible primary entity identifier.
+- `entities` is optional, but when present it carries the complete set of recognized entities currently inside the configured zone for that emitted event.
+- When Gateway syncs a rule whose `entity_selector.value == ""`, Vision Service must treat that rule as "no class filter" and must not gate detections by entity class before dwell aggregation.
+- For wildcard rules, events must include every in-zone recognized entity in `entities`.
+- Gateway uses `entities` for persisted history display and entity-based filtering in Admin, so Vision Service should keep the array stable, deduplicated by `kind + value`, and ordered by its primary/most relevant entity first.
 
 ### `evidence`
 
@@ -158,12 +178,43 @@ Sent after the matching `rule_events` message when the completed dwell event inc
         "phase": "start",
         "captured_at": "2026-04-11T08:00:08Z",
         "content_type": "image/jpeg",
-        "image_base64": "..."
+        "image_base64": "...",
+        "metadata": {
+          "annotations": {
+            "image_kind": "raw",
+            "coordinate_space": "normalized_xywh",
+            "source": "ultralytics.boxes",
+            "detections": [
+              {
+                "kind": "label",
+                "value": "cat",
+                "display_name": "Cat",
+                "confidence": 0.93,
+                "track_id": "7",
+                "box": {
+                  "x": 0.12,
+                  "y": 0.24,
+                  "width": 0.31,
+                  "height": 0.42
+                }
+              }
+            ]
+          }
+        }
       }
     ]
   }
 }
 ```
+
+`evidence` annotation semantics:
+
+- Vision Service may send either a pre-rendered annotated image or a raw capture plus structured detections.
+- `metadata.annotations.image_kind = "annotated"` means `image_base64` already contains rendered boxes and labels. Gateway/Admin should display that image as-is and must not draw another overlay from the same detection set.
+- `metadata.annotations.image_kind = "raw"` means `image_base64` is an unannotated capture. Gateway/Admin may draw the overlay from `metadata.annotations.detections`.
+- `metadata.annotations.coordinate_space` is fixed to normalized top-left origin coordinates in `[0,1]` space using `box.{x,y,width,height}`.
+- Each detection should carry `display_name` and may optionally carry `kind`, `value`, `confidence`, and `track_id`.
+- If Vision Service uses Ultralytics' own renderer to generate evidence, it should still keep detection ordering stable and may optionally include the same detection list for downstream structured consumers.
 
 ### `error`
 
@@ -350,6 +401,7 @@ Important semantics:
 - rules missing from the new payload are stopped and removed.
 - `recognition_enabled=false` stops all recognition work cleanly.
 - rules only run while the WebSocket session remains connected.
+- `entity_selector.value == ""` means the rule is intentionally wildcarded. Vision Service must still honor the rule's zone and dwell threshold, but it must skip any class-level inclusion gate for that rule.
 
 ## Ordering Notes
 

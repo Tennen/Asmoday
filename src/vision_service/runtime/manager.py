@@ -1,21 +1,20 @@
 import asyncio
 import logging
-from base64 import b64encode
 from dataclasses import asdict
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from vision_service.contracts import (
-    EvidenceCallbackPayload,
-    EvidenceCapture,
-    EventCallbackPayload,
-    EventRecord,
     RuntimeStatusPayload,
     SyncRequest,
     VisionRule,
 )
 from vision_service.gateway.transport import GatewayTransport, GatewayTransportError
 from vision_service.runtime.events import RuleEvent
+from vision_service.runtime.telemetry import (
+    build_evidence_callback_payload,
+    build_event_callback_payload,
+)
 from vision_service.settings import Settings
 from vision_service.vision.backend import VisionBackend
 from vision_service.vision.pipeline import RuleVisionWorker
@@ -320,39 +319,19 @@ class RuntimeManager:
 
         try:
             await transport.send_events(
-                EventCallbackPayload(
-                    events=[
-                        EventRecord(
-                            event_id=event_id,
-                            rule_id=event.rule_id,
-                            camera_device_id=event.camera_device_id,
-                            status=event.status,
-                            observed_at=event.observed_at,
-                            dwell_seconds=event.dwell_seconds,
-                            entity_value=event.entity_value,
-                            metadata=event.metadata or None,
-                        )
-                    ]
+                build_event_callback_payload(
+                    event=event,
+                    event_id=event_id,
                 )
             )
 
-            if event.evidence:
+            evidence_payload = build_evidence_callback_payload(
+                event=event,
+                event_id=event_id,
+            )
+            if evidence_payload is not None:
                 await transport.send_evidence(
-                    EvidenceCallbackPayload(
-                        captures=[
-                            EvidenceCapture(
-                                capture_id=f"{event_id}:{capture.phase}",
-                                event_id=event_id,
-                                rule_id=event.rule_id,
-                                camera_device_id=event.camera_device_id,
-                                phase=capture.phase,
-                                captured_at=capture.captured_at,
-                                content_type="image/jpeg",
-                                image_base64=b64encode(capture.image_bytes).decode("ascii"),
-                            )
-                            for capture in event.evidence
-                        ]
-                    )
+                    evidence_payload,
                 )
         except GatewayTransportError as exc:
             logger.warning(
