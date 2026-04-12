@@ -16,10 +16,14 @@ from vision_service.vision.entities import (
     TransitionContext,
     ZoneObservation,
     build_transition_context,
-    dedupe_entities,
     default_entity_for_rule,
-    entity_descriptor_for_detection,
     evidence_metadata,
+)
+from vision_service.vision.roi import ROIOccupancyDetector, ROIOccupancyObservation
+from vision_service.vision.zone import (
+    encode_frame,
+    select_target_detections,
+    visible_tracks_in_zone,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,6 +65,11 @@ class RuleVisionWorker:
         self._default_entity = default_entity_for_rule(self._rule)
         self._current_track_entities: dict[int, EntityDescriptor] = {}
         self._current_zone_entities: tuple[EntityDescriptor, ...] = ()
+        self._roi_detector = (
+            ROIOccupancyDetector(rule=self._rule, settings=self._settings)
+            if self._settings.roi_enabled
+            else None
+        )
 
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -153,7 +162,10 @@ class RuleVisionWorker:
 
         try:
             while not self._stop_event.is_set():
-                result = await self._wait_for_stream_result(after_token=last_token)
+                result = await self._wait_for_stream_result(
+                    after_token=last_token,
+                    require_detection=self._should_request_detection(),
+                )
                 if result is None:
                     continue
                 last_token = result.token
@@ -210,9 +222,13 @@ class RuleVisionWorker:
         self,
         *,
         after_token: int | None,
+        require_detection: bool,
     ) -> AnalyzedFrameResult | None:
         result_task = asyncio.create_task(
-            self._frame_stream.wait_for_result(after_token=after_token),
+            self._frame_stream.wait_for_result(
+                after_token=after_token,
+                require_detection=require_detection,
+            ),
         )
         stop_task = asyncio.create_task(self._stop_event.wait())
         done, pending = await asyncio.wait(
@@ -240,18 +256,30 @@ class RuleVisionWorker:
         observed_at: datetime,
         dwell_tracker: RuleDwellTracker,
     ) -> tuple[DwellTransition | None, TransitionContext]:
-        if batch is None:
-            raise RuntimeError("analyzed frame is missing detection batch")
-        target_detections, class_mask = self._select_target_detections(batch)
-        tracked_detections = tracker.update_with_detections(target_detections)
-        zone_observation = self._visible_tracks_in_zone(
-            detections=tracked_detections,
-            frame=frame,
-            labels=batch.labels,
-            batch=batch,
-            class_mask=class_mask,
-        )
         previous_track_entities = dict(self._current_track_entities)
+        previous_entities = self._current_zone_entities
+        roi_observation = self._observe_roi(frame=frame, observed_at=observed_at)
+        zone_observation = ZoneObservation(
+            visible_tracks={},
+            track_entities={},
+            entities=(),
+        )
+        if batch is not None:
+            target_detections, class_mask = self._select_target_detections(batch)
+            tracked_detections = tracker.update_with_detections(target_detections)
+            zone_observation = self._visible_tracks_in_zone(
+                detections=tracked_detections,
+                frame=frame,
+                labels=batch.labels,
+                batch=batch,
+                class_mask=class_mask,
+            )
+        if not zone_observation.visible_tracks:
+            zone_observation = self._roi_supported_observation(
+                roi_observation=roi_observation,
+                previous_track_entities=previous_track_entities,
+                previous_entities=previous_entities,
+            )
         transition = dwell_tracker.observe(
             observed_at=observed_at,
             visible_tracks=zone_observation.visible_tracks,
@@ -271,26 +299,46 @@ class RuleVisionWorker:
             default_entity=self._default_entity,
         )
 
+    def _should_request_detection(self) -> bool:
+        if self._settings.yolo_run_mode == "always" or self._roi_detector is None:
+            return True
+        return self._roi_detector.current_state in {"candidate_occupied", "occupied"}
+
+    def _observe_roi(
+        self,
+        *,
+        frame: np.ndarray[Any, Any],
+        observed_at: datetime,
+    ) -> ROIOccupancyObservation | None:
+        if self._roi_detector is None:
+            return None
+        return self._roi_detector.observe(frame=frame, observed_at=observed_at)
+
+    def _roi_supported_observation(
+        self,
+        *,
+        roi_observation: ROIOccupancyObservation | None,
+        previous_track_entities: dict[int, EntityDescriptor],
+        previous_entities: tuple[EntityDescriptor, ...],
+    ) -> ZoneObservation:
+        if roi_observation is None or not roi_observation.presence_active:
+            return ZoneObservation(visible_tracks={}, track_entities={}, entities=())
+        if not previous_track_entities:
+            return ZoneObservation(visible_tracks={}, track_entities={}, entities=())
+        return ZoneObservation(
+            visible_tracks={track_id: None for track_id in previous_track_entities},
+            track_entities=previous_track_entities,
+            entities=previous_entities,
+        )
+
     def _select_target_detections(
         self,
         batch: DetectionBatch,
     ) -> tuple[Any, np.ndarray[Any, Any] | None]:
-        detections = batch.detections
-        if (
-            len(detections) == 0
-            or detections.class_id is None
-            or self._rule.entity_selector.value == ""
-        ):
-            return detections, None
-
-        mask = np.array(
-            [
-                batch.labels.get(int(class_id)) == self._rule.entity_selector.value
-                for class_id in detections.class_id
-            ],
-            dtype=bool,
+        return select_target_detections(
+            batch=batch,
+            entity_value=self._rule.entity_selector.value,
         )
-        return detections[mask], mask
 
     def _visible_tracks_in_zone(
         self,
@@ -301,59 +349,15 @@ class RuleVisionWorker:
         batch: DetectionBatch,
         class_mask: np.ndarray[Any, Any] | None,
     ) -> ZoneObservation:
-        if len(detections) == 0 or detections.tracker_id is None:
-            return ZoneObservation(
-                visible_tracks={},
-                track_entities={},
-                entities=(),
-            )
-
-        frame_height, frame_width = frame.shape[:2]
-        zone_left = self._rule.zone.x * frame_width
-        zone_top = self._rule.zone.y * frame_height
-        zone_right = zone_left + (self._rule.zone.width * frame_width)
-        zone_bottom = zone_top + (self._rule.zone.height * frame_height)
-
-        track_ids: list[int] = []
-        track_entities: dict[int, EntityDescriptor] = {}
-        class_ids = detections.class_id
-
-        for index, (bounding_box, tracker_id) in enumerate(
-            zip(detections.xyxy, detections.tracker_id)
-        ):
-            if tracker_id is None:
-                continue
-            center_x = float((bounding_box[0] + bounding_box[2]) / 2.0)
-            center_y = float((bounding_box[1] + bounding_box[3]) / 2.0)
-            if zone_left <= center_x <= zone_right and zone_top <= center_y <= zone_bottom:
-                track_id = int(tracker_id)
-                track_ids.append(track_id)
-                track_entities[track_id] = entity_descriptor_for_detection(
-                    class_id=(
-                        int(class_ids[index])
-                        if class_ids is not None
-                        else None
-                    ),
-                    labels=labels,
-                    default_entity=self._default_entity,
-                )
-
-        visible_tracks: dict[int, bytes] = {}
-        if track_ids:
-            encoded_frame = self._encode_annotated_frame(
-                batch=batch,
-                frame=frame,
-                class_mask=class_mask,
-            )
-            visible_tracks = {
-                track_id: encoded_frame
-                for track_id in track_ids
-            }
-
-        return ZoneObservation(
-            visible_tracks=visible_tracks,
-            track_entities=track_entities,
-            entities=dedupe_entities(track_entities.values()),
+        return visible_tracks_in_zone(
+            rule=self._rule,
+            detections=detections,
+            frame=frame,
+            labels=labels,
+            batch=batch,
+            class_mask=class_mask,
+            default_entity=self._default_entity,
+            jpeg_quality=self._settings.jpeg_quality,
         )
 
     def _encode_annotated_frame(
@@ -378,16 +382,10 @@ class RuleVisionWorker:
         return self._encode_frame(annotated_frame)
 
     def _encode_frame(self, frame: np.ndarray[Any, Any]) -> bytes:
-        import cv2
-
-        success, buffer = cv2.imencode(
-            ".jpg",
-            frame,
-            [cv2.IMWRITE_JPEG_QUALITY, self._settings.jpeg_quality],
+        return encode_frame(
+            frame=frame,
+            jpeg_quality=self._settings.jpeg_quality,
         )
-        if not success:
-            raise RuntimeError("failed to encode evidence frame")
-        return buffer.tobytes()
 
     async def _emit_transition(
         self,

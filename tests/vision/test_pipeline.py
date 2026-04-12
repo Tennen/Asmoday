@@ -16,6 +16,7 @@ from vision_service.settings import Settings
 from vision_service.vision.backend import DetectionBatch
 from vision_service.vision.entities import TransitionContext
 from vision_service.vision.pipeline import RuleVisionWorker
+from vision_service.vision.roi.models import ROIOccupancyObservation
 
 
 class DummyStream:
@@ -56,10 +57,11 @@ def build_worker(
     entity_value: str,
     emit_rule_event,
     frame_stream: object | None = None,
+    settings: Settings | None = None,
 ) -> RuleVisionWorker:
     return RuleVisionWorker(
         rule=build_rule(entity_value=entity_value),
-        settings=Settings(),
+        settings=settings or Settings(),
         emit_rule_event=emit_rule_event,
         frame_stream=frame_stream or DummyStream(),
     )
@@ -175,6 +177,56 @@ def test_stream_url_falls_back_to_rule_rtsp_source_when_frame_stream_has_no_url(
     )
 
     assert worker._stream_url() == "rtsp://camera/test"
+
+
+def test_roi_triggered_mode_only_requests_detection_when_roi_is_active() -> None:
+    async def emit_rule_event(event):  # noqa: ANN001, ANN202
+        return "unused"
+
+    worker = build_worker(
+        entity_value="cat",
+        emit_rule_event=emit_rule_event,
+        settings=Settings(roi_enabled=True, yolo_run_mode="roi_triggered"),
+    )
+
+    assert worker._should_request_detection() is False
+
+    class FakeDetector:
+        current_state = "candidate_occupied"
+
+    worker._roi_detector = FakeDetector()
+
+    assert worker._should_request_detection() is True
+
+
+def test_roi_supported_observation_reuses_last_confirmed_tracks() -> None:
+    async def emit_rule_event(event):  # noqa: ANN001, ANN202
+        return "unused"
+
+    worker = build_worker(
+        entity_value="cat",
+        emit_rule_event=emit_rule_event,
+        settings=Settings(roi_enabled=True),
+    )
+    entity = EntityDescriptor(kind="label", value="cat", display_name="Cat")
+
+    observation = worker._roi_supported_observation(
+        roi_observation=ROIOccupancyObservation(
+            observed_at=datetime(2026, 4, 12, 8, 0, tzinfo=UTC),
+            state="candidate_occupied",
+            frame_present=True,
+            occupancy_ratio=0.12,
+            largest_blob_area=512,
+            roi_area_pixels=1000,
+            foreground_pixels=120,
+        ),
+        previous_track_entities={7: entity},
+        previous_entities=(entity,),
+    )
+
+    assert observation.visible_tracks == {7: None}
+    assert observation.track_entities == {7: entity}
+    assert observation.entities == (entity,)
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,7 @@ class FakeFrameStream:
         self,
         *,
         after_token: int | None,
+        require_detection: bool = True,
     ) -> StreamReadResult | None:
         return StreamReadResult(
             token=self._result.token,
@@ -87,4 +88,22 @@ async def test_shared_inference_stream_reuses_cached_detection_for_same_token() 
 
     assert first is not None
     assert second is not None
+    assert backend.detect_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_shared_inference_stream_skips_detection_until_requested() -> None:
+    backend = CountingBackend()
+    stream = SharedInferenceStream(
+        frame_stream=FakeFrameStream(),
+        backend=backend,  # type: ignore[arg-type]
+    )
+
+    first = await stream.wait_for_result(after_token=None, require_detection=False)
+    second = await stream.wait_for_result(after_token=None, require_detection=True)
+
+    assert first is not None
+    assert first.batch is None
+    assert second is not None
+    assert second.batch is not None
     assert backend.detect_calls == 1

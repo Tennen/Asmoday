@@ -89,6 +89,7 @@ class FakeAnalysisStream:
         self,
         *,
         after_token: int | None,
+        require_detection: bool = True,
     ) -> AnalyzedFrameResult | None:
         return None
 

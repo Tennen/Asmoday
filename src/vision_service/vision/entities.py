@@ -13,7 +13,7 @@ class TransitionContext:
 
 @dataclass(slots=True, frozen=True)
 class ZoneObservation:
-    visible_tracks: dict[int, bytes]
+    visible_tracks: dict[int, bytes | None]
     track_entities: dict[int, EntityDescriptor]
     entities: tuple[EntityDescriptor, ...]
 

@@ -23,6 +23,7 @@ class AnalyzedFrameStream(Protocol):
         self,
         *,
         after_token: int | None,
+        require_detection: bool = True,
     ) -> AnalyzedFrameResult | None: ...
 
 
@@ -45,6 +46,7 @@ class SharedInferenceStream:
         self,
         *,
         after_token: int | None,
+        require_detection: bool = True,
     ) -> AnalyzedFrameResult | None:
         stream_result = await self._frame_stream.wait_for_result(after_token=after_token)
         if stream_result is None:
@@ -56,6 +58,14 @@ class SharedInferenceStream:
                 frame=None,
                 batch=None,
                 error=stream_result.error,
+            )
+        if not require_detection:
+            return AnalyzedFrameResult(
+                token=stream_result.token,
+                observed_at=stream_result.observed_at,
+                frame=stream_result.frame,
+                batch=None,
+                error=None,
             )
 
         future, should_analyze = await self._future_for_token(stream_result)

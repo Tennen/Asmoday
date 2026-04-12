@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     )
     model_device: str = "cpu"
     model_confidence_threshold: float = Field(default=0.35, gt=0, lt=1)
+    yolo_run_mode: Literal["always", "roi_triggered"] = Field(
+        default="always",
+        validation_alias=AliasChoices(
+            "VISION_SERVICE_YOLO_RUN_MODE",
+            "YOLO_RUN_MODE",
+        ),
+    )
 
     frame_sample_interval_seconds: float = Field(default=0.25, gt=0)
     frame_failure_backoff_seconds: float = Field(default=1.0, gt=0)
@@ -53,6 +60,15 @@ class Settings(BaseSettings):
     tracker_lost_track_buffer: int = Field(default=30, ge=1)
     evidence_buffer_max_samples: int = Field(default=32, ge=3)
     jpeg_quality: int = Field(default=85, ge=1, le=100)
+    roi_enabled: bool = False
+    roi_warmup_seconds: float = Field(default=3.0, ge=0)
+    roi_clear_hold_seconds: float = Field(default=1.0, ge=0)
+    roi_max_side_px: int = Field(default=320, ge=32)
+    roi_occupancy_ratio_threshold: float = Field(default=0.08, gt=0, lt=1)
+    roi_largest_blob_area_ratio_threshold: float = Field(default=0.03, gt=0, lt=1)
+    roi_min_largest_blob_area: int = Field(default=400, ge=1)
+    roi_mog2_history: int = Field(default=300, ge=1)
+    roi_mog2_var_threshold: float = Field(default=16.0, gt=0)
 
     event_id_prefix: str = "vision-evt"
 
