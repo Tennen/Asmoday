@@ -66,6 +66,12 @@ Recommended workflow:
   Enables ROI occupancy detection alongside the existing YOLO pipeline. Defaults to `false`.
 - `VISION_SERVICE_YOLO_RUN_MODE`
   Controls how YOLO is scheduled when ROI is enabled. `always` keeps current behavior. `roi_triggered` keeps ROI resident and only requests shared YOLO inference while ROI occupancy is active.
+- `VISION_SERVICE_SEMANTIC_CHECKER_BASE_URL`
+  Optional OpenAI-compatible local VLM endpoint. When unset, ROI/VLM semantic fallback stays disabled.
+- `VISION_SERVICE_SEMANTIC_CHECKER_MODEL_NAME`
+  Model name sent to the semantic checker `chat/completions` request.
+- `VISION_SERVICE_SEMANTIC_CHECKER_CONSECUTIVE_YOLO_FAILURES`
+  Consecutive in-zone YOLO misses required before the service asks the VLM to re-check an occupied ROI.
 - `VISION_SERVICE_RTSP_TRANSPORT`
   RTSP lower transport for OpenCV FFmpeg capture. Defaults to `tcp`.
 - `VISION_SERVICE_RTSP_OPEN_TIMEOUT_MSEC`
@@ -110,8 +116,9 @@ The service may asynchronously send:
 - Enabled rules still run as independent dwell workers, but rules that share the same `rtsp_source.url` reuse a single RTSP capture task.
 - Each worker consumes the latest shared frame and can optionally run an ROI occupancy detector over its configured zone.
 - With `VISION_SERVICE_ROI_ENABLED=false`, workers keep the original behavior: shared YOLO inference runs on every frame, then ByteTrack tracking and zone filtering drive dwell.
-- With `VISION_SERVICE_ROI_ENABLED=true` and `VISION_SERVICE_YOLO_RUN_MODE=always`, ROI runs in parallel and can hold a previously confirmed dwell episode active through short YOLO dropouts.
+- With `VISION_SERVICE_ROI_ENABLED=true` and `VISION_SERVICE_YOLO_RUN_MODE=always`, ROI runs in parallel as an occupancy signal but does not silently extend YOLO episodes on its own.
 - With `VISION_SERVICE_ROI_ENABLED=true` and `VISION_SERVICE_YOLO_RUN_MODE=roi_triggered`, ROI stays resident and shared YOLO inference is requested only while ROI occupancy is active.
+- When ROI remains occupied but YOLO keeps missing and the semantic checker is configured, the worker can ask the local VLM to re-check cropped zone keyframes using the rule's entity plus optional behavior text.
 - `threshold_met` is emitted once after a dwell episode ends and exceeded the configured threshold.
 - Evidence is sent as `start`, `middle`, and `end` JPEG frames over the WebSocket session.
 

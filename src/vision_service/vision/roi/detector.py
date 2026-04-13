@@ -8,6 +8,7 @@ from vision_service.contracts import VisionRule
 from vision_service.settings import Settings
 from vision_service.vision.roi.models import ROIOccupancyObservation
 from vision_service.vision.roi.state import ROIOccupancyStateMachine
+from vision_service.vision.zone import crop_zone_frame
 
 
 @dataclass(slots=True, frozen=True)
@@ -96,40 +97,11 @@ class ROIOccupancyDetector:
         )
 
     def _prepare_frame(self, frame: np.ndarray[Any, Any]) -> _PreparedROIFrame:
-        import cv2
-
-        frame_height, frame_width = frame.shape[:2]
-        left = max(0, min(frame_width - 1, int(self._rule.zone.x * frame_width)))
-        top = max(0, min(frame_height - 1, int(self._rule.zone.y * frame_height)))
-        right = max(
-            left + 1,
-            min(frame_width, int((self._rule.zone.x + self._rule.zone.width) * frame_width)),
+        resized = crop_zone_frame(
+            rule=self._rule,
+            frame=frame,
+            max_side_px=self._settings.roi_max_side_px,
         )
-        bottom = max(
-            top + 1,
-            min(
-                frame_height,
-                int((self._rule.zone.y + self._rule.zone.height) * frame_height),
-            ),
-        )
-        roi_frame = frame[top:bottom, left:right]
-        if roi_frame.size == 0:
-            raise RuntimeError("ROI crop is empty for configured rule zone")
-
-        height, width = roi_frame.shape[:2]
-        max_side = max(height, width)
-        if max_side <= self._settings.roi_max_side_px:
-            resized = roi_frame
-        else:
-            scale = self._settings.roi_max_side_px / float(max_side)
-            resized = cv2.resize(
-                roi_frame,
-                (
-                    max(1, int(round(width * scale))),
-                    max(1, int(round(height * scale))),
-                ),
-                interpolation=cv2.INTER_AREA,
-            )
 
         mask = np.full(resized.shape[:2], 255, dtype=np.uint8)
         return _PreparedROIFrame(frame=resized, mask=mask)

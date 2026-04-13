@@ -17,6 +17,11 @@ from vision_service.vision.backend import DetectionBatch
 from vision_service.vision.entities import TransitionContext
 from vision_service.vision.pipeline import RuleVisionWorker
 from vision_service.vision.roi.models import ROIOccupancyObservation
+from vision_service.vision.zone import (
+    encode_annotated_frame,
+    select_target_detections,
+    visible_tracks_in_zone,
+)
 
 
 class DummyStream:
@@ -83,7 +88,10 @@ def test_select_target_detections_skips_class_filter_for_wildcard_rule() -> None
         labels={0: "cat", 1: "dog"},
     )
 
-    selected, mask = worker._select_target_detections(batch)
+    selected, mask = select_target_detections(
+        batch=batch,
+        entity_value=worker._rule.entity_selector.value,
+    )
 
     assert selected is detections
     assert mask is None
@@ -106,12 +114,16 @@ def test_encode_annotated_frame_filters_result_boxes_before_plot(
         ),
         labels={0: "cat", 1: "dog"},
     )
-    monkeypatch.setattr(worker, "_encode_frame", lambda frame: b"annotated")
+    monkeypatch.setattr(
+        "vision_service.vision.zone.encode_frame",
+        lambda *, frame, jpeg_quality: b"annotated",
+    )
 
-    image_bytes = worker._encode_annotated_frame(
+    image_bytes = encode_annotated_frame(
         batch=batch,
         frame=np.zeros((4, 4, 3), dtype=np.uint8),
         class_mask=np.array([True, False], dtype=bool),
+        jpeg_quality=worker._settings.jpeg_quality,
     )
 
     assert image_bytes == b"annotated"
@@ -133,8 +145,7 @@ def test_visible_tracks_in_zone_skips_encoding_when_no_detection_is_in_zone(
 
     worker = build_worker(entity_value="cat", emit_rule_event=emit_rule_event)
     monkeypatch.setattr(
-        worker,
-        "_encode_annotated_frame",
+        "vision_service.vision.zone.encode_annotated_frame",
         lambda **kwargs: pytest.fail("encoding should be skipped"),
     )
     detections = sv.Detections(
@@ -149,12 +160,15 @@ def test_visible_tracks_in_zone_skips_encoding_when_no_detection_is_in_zone(
         labels={0: "cat"},
     )
 
-    observation = worker._visible_tracks_in_zone(
+    observation = visible_tracks_in_zone(
+        rule=worker._rule,
         detections=detections,
         frame=np.zeros((10, 10, 3), dtype=np.uint8),
         labels=batch.labels,
         batch=batch,
         class_mask=np.array([True], dtype=bool),
+        default_entity=worker._default_entity,
+        jpeg_quality=worker._settings.jpeg_quality,
     )
 
     assert observation.visible_tracks == {}
@@ -199,7 +213,8 @@ def test_roi_triggered_mode_only_requests_detection_when_roi_is_active() -> None
     assert worker._should_request_detection() is True
 
 
-def test_roi_supported_observation_reuses_last_confirmed_tracks() -> None:
+@pytest.mark.asyncio
+async def test_process_frame_does_not_reuse_last_confirmed_tracks_when_detection_is_missing() -> None:
     async def emit_rule_event(event):  # noqa: ANN001, ANN202
         return "unused"
 
@@ -209,24 +224,48 @@ def test_roi_supported_observation_reuses_last_confirmed_tracks() -> None:
         settings=Settings(roi_enabled=True),
     )
     entity = EntityDescriptor(kind="label", value="cat", display_name="Cat")
+    worker._current_track_entities = {7: entity}
+    worker._current_track_confidences = {7: 0.91}
+    worker._current_zone_entities = (entity,)
 
-    observation = worker._roi_supported_observation(
-        roi_observation=ROIOccupancyObservation(
-            observed_at=datetime(2026, 4, 12, 8, 0, tzinfo=UTC),
-            state="candidate_occupied",
-            frame_present=True,
-            occupancy_ratio=0.12,
-            largest_blob_area=512,
-            roi_area_pixels=1000,
-            foreground_pixels=120,
-        ),
-        previous_track_entities={7: entity},
-        previous_entities=(entity,),
+    class FakeDetector:
+        def observe(self, *, frame, observed_at):  # noqa: ANN001, ANN201
+            return ROIOccupancyObservation(
+                observed_at=observed_at,
+                state="candidate_occupied",
+                frame_present=True,
+                occupancy_ratio=0.12,
+                largest_blob_area=512,
+                roi_area_pixels=1000,
+                foreground_pixels=120,
+            )
+
+    worker._roi_detector = FakeDetector()
+
+    class FakeDwellTracker:
+        def __init__(self) -> None:
+            self.visible_tracks: dict[int, bytes | None] | None = None
+
+        def observe(self, *, observed_at, visible_tracks):  # noqa: ANN001, ANN201
+            self.visible_tracks = visible_tracks
+            return None
+
+    dwell_tracker = FakeDwellTracker()
+
+    processed = await worker._process_frame(
+        tracker=object(),
+        frame=np.zeros((4, 4, 3), dtype=np.uint8),
+        batch=None,
+        observed_at=datetime(2026, 4, 12, 8, 0, tzinfo=UTC),
+        dwell_tracker=dwell_tracker,  # type: ignore[arg-type]
     )
 
-    assert observation.visible_tracks == {7: None}
-    assert observation.track_entities == {7: entity}
-    assert observation.entities == (entity,)
+    assert processed.transition is None
+    assert processed.context == TransitionContext()
+    assert dwell_tracker.visible_tracks == {}
+    assert worker._current_track_entities == {}
+    assert worker._current_track_confidences == {}
+    assert worker._current_zone_entities == ()
 
 
 @pytest.mark.asyncio

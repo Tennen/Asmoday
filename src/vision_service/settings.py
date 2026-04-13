@@ -69,8 +69,19 @@ class Settings(BaseSettings):
     roi_min_largest_blob_area: int = Field(default=400, ge=1)
     roi_mog2_history: int = Field(default=300, ge=1)
     roi_mog2_var_threshold: float = Field(default=16.0, gt=0)
+    semantic_checker_base_url: str | None = None
+    semantic_checker_model_name: str | None = None
+    semantic_checker_api_key: str | None = None
+    semantic_checker_timeout_seconds: float = Field(default=5.0, gt=0)
+    semantic_checker_consecutive_yolo_failures: int = Field(default=6, ge=1)
+    semantic_checker_retry_cooldown_seconds: float = Field(default=2.0, gt=0)
+    semantic_checker_max_attempts_per_episode: int = Field(default=3, ge=1)
 
     event_id_prefix: str = "vision-evt"
+
+    @property
+    def semantic_checker_enabled(self) -> bool:
+        return bool(self.semantic_checker_base_url and self.semantic_checker_model_name)
 
 
 @lru_cache(maxsize=1)

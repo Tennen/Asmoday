@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CameraIdentity(BaseModel):
@@ -53,8 +53,19 @@ class VisionRule(BaseModel):
     camera: CameraIdentity
     rtsp_source: RTSPSource
     entity_selector: EntitySelector
+    behavior: str | None = Field(default=None, min_length=1)
     zone: ZoneRect
     stay_threshold_seconds: int = Field(ge=1)
+
+    @field_validator("behavior", mode="before")
+    @classmethod
+    def normalize_behavior(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
 
 
 class SyncRequest(BaseModel):

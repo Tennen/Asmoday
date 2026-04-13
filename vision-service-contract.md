@@ -160,6 +160,7 @@ Sent once after a dwell episode ends and the completed stay exceeded the configu
 - When Gateway syncs a rule whose `entity_selector.value == ""`, Vision Service must treat that rule as "no class filter" and must not gate detections by entity class before dwell aggregation.
 - For wildcard rules, events must include every in-zone recognized entity in `entities`.
 - Gateway uses `entities` for persisted history display and entity-based filtering in Admin, so Vision Service should keep the array stable, deduplicated by `kind + value`, and ordered by its primary/most relevant entity first.
+- `metadata.decision` may carry source and scoring details such as `source`, `confidence_score`, `confidence_breakdown`, and semantic checker verdicts when ROI/VLM fallback was used.
 
 ### `evidence`
 
@@ -369,6 +370,7 @@ Request:
           "kind": "label",
           "value": "cat"
         },
+        "behavior": "eating",
         "zone": {
           "x": 0.12,
           "y": 0.28,
@@ -402,6 +404,7 @@ Important semantics:
 - `recognition_enabled=false` stops all recognition work cleanly.
 - rules only run while the WebSocket session remains connected.
 - `entity_selector.value == ""` means the rule is intentionally wildcarded. Vision Service must still honor the rule's zone and dwell threshold, but it must skip any class-level inclusion gate for that rule.
+- `behavior` is optional. When present, Vision Service may combine it with the entity selector to build a short semantic-check prompt for an optional local VLM fallback path.
 
 ## Ordering Notes
 

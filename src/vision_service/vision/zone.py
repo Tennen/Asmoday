@@ -49,6 +49,7 @@ def visible_tracks_in_zone(
         return ZoneObservation(
             visible_tracks={},
             track_entities={},
+            track_confidences={},
             entities=(),
         )
 
@@ -60,7 +61,9 @@ def visible_tracks_in_zone(
 
     track_ids: list[int] = []
     track_entities: dict[int, EntityDescriptor] = {}
+    track_confidences: dict[int, float] = {}
     class_ids = detections.class_id
+    confidences = detections.confidence
 
     for index, (bounding_box, tracker_id) in enumerate(
         zip(detections.xyxy, detections.tracker_id)
@@ -77,6 +80,8 @@ def visible_tracks_in_zone(
                 labels=labels,
                 default_entity=default_entity,
             )
+            if confidences is not None:
+                track_confidences[track_id] = float(confidences[index])
 
     visible_tracks: dict[int, bytes | None] = {}
     if track_ids:
@@ -91,7 +96,49 @@ def visible_tracks_in_zone(
     return ZoneObservation(
         visible_tracks=visible_tracks,
         track_entities=track_entities,
+        track_confidences=track_confidences,
         entities=dedupe_entities(track_entities.values()),
+    )
+
+
+def crop_zone_frame(
+    *,
+    rule: VisionRule,
+    frame: np.ndarray[Any, Any],
+    max_side_px: int | None = None,
+) -> np.ndarray[Any, Any]:
+    import cv2
+
+    frame_height, frame_width = frame.shape[:2]
+    left = max(0, min(frame_width - 1, int(rule.zone.x * frame_width)))
+    top = max(0, min(frame_height - 1, int(rule.zone.y * frame_height)))
+    right = max(
+        left + 1,
+        min(frame_width, int((rule.zone.x + rule.zone.width) * frame_width)),
+    )
+    bottom = max(
+        top + 1,
+        min(frame_height, int((rule.zone.y + rule.zone.height) * frame_height)),
+    )
+    cropped = frame[top:bottom, left:right]
+    if cropped.size == 0:
+        raise RuntimeError("zone crop is empty for configured rule zone")
+    if max_side_px is None:
+        return cropped
+
+    height, width = cropped.shape[:2]
+    max_side = max(height, width)
+    if max_side <= max_side_px:
+        return cropped
+
+    scale = max_side_px / float(max_side)
+    return cv2.resize(
+        cropped,
+        (
+            max(1, int(round(width * scale))),
+            max(1, int(round(height * scale))),
+        ),
+        interpolation=cv2.INTER_AREA,
     )
 
 
