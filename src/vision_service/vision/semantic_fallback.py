@@ -9,7 +9,21 @@ from vision_service.vision.confidence import (
     score_semantic_fallback,
 )
 from vision_service.vision.roi.models import ROIOccupancyObservation
-from vision_service.vision.semantic import SemanticCheckResult, SemanticChecker
+from vision_service.vision.semantic import (
+    SemanticCheckResult,
+    SemanticChecker,
+    SemanticVerdict,
+)
+
+
+POSITIVE_SEMANTIC_VERDICTS = {"有", "疑似有"}
+
+
+@dataclass(slots=True, frozen=True)
+class SemanticVoteSummary:
+    attempts: int
+    positive_votes: int
+    verdicts: tuple[SemanticVerdict, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -17,6 +31,7 @@ class SemanticFallbackTransition:
     observed_at: datetime
     dwell_seconds: int
     semantic_result: SemanticCheckResult
+    vote_summary: SemanticVoteSummary
     confidence: ConfidenceAssessment
     consecutive_yolo_failures: int
     yolo_support_confidence: float | None = None
@@ -31,10 +46,12 @@ class _SemanticEpisode:
     last_sampled_at: datetime | None = None
     last_checked_at: datetime | None = None
     semantic_result: SemanticCheckResult | None = None
+    semantic_results: list[SemanticCheckResult] = field(default_factory=list)
     yolo_threshold_observed: bool = False
     consecutive_yolo_failures: int = 0
     best_yolo_confidence: float | None = None
     attempts: int = 0
+    positive_votes: int = 0
     samples: list[EvidenceSample] = field(default_factory=list)
 
 
@@ -58,6 +75,9 @@ class SemanticFallbackTracker:
         self._consecutive_yolo_failures = consecutive_yolo_failures
         self._retry_cooldown_seconds = retry_cooldown_seconds
         self._max_attempts_per_episode = max_attempts_per_episode
+        self._required_positive_votes = (
+            1 if max_attempts_per_episode == 1 else 2
+        )
         self._checker = checker
         self._episode: _SemanticEpisode | None = None
 
@@ -129,15 +149,20 @@ class SemanticFallbackTracker:
             and (
                 observed_at - episode.last_checked_at
             ).total_seconds()
-            < self._retry_cooldown_seconds
+            < self._effective_retry_cooldown_seconds()
         ):
             return None
 
         episode.last_checked_at = observed_at
         episode.attempts += 1
         result = await self._checker.check(image_bytes=image_bytes, rule=self._rule)
-        if result.verdict in {"有", "疑似有"}:
-            episode.semantic_result = result
+        episode.semantic_results.append(result)
+        if result.verdict in POSITIVE_SEMANTIC_VERDICTS:
+            episode.positive_votes += 1
+        if episode.positive_votes >= self._required_positive_votes:
+            episode.semantic_result = _select_semantic_result(
+                episode.semantic_results
+            )
         return None
 
     def force_clear(
@@ -172,6 +197,13 @@ class SemanticFallbackTracker:
             observed_at=observed_at,
             dwell_seconds=dwell_seconds,
             semantic_result=episode.semantic_result,
+            vote_summary=SemanticVoteSummary(
+                attempts=episode.attempts,
+                positive_votes=episode.positive_votes,
+                verdicts=tuple(
+                    result.verdict for result in episode.semantic_results
+                ),
+            ),
             confidence=confidence,
             consecutive_yolo_failures=episode.consecutive_yolo_failures,
             yolo_support_confidence=episode.best_yolo_confidence,
@@ -208,6 +240,13 @@ class SemanticFallbackTracker:
                 max_samples=self._max_samples,
             )
         episode.last_sampled_at = observed_at
+
+    def _effective_retry_cooldown_seconds(self) -> float:
+        threshold_spread_seconds = self._threshold_seconds / max(
+            float(self._max_attempts_per_episode),
+            1.0,
+        )
+        return max(self._retry_cooldown_seconds, threshold_spread_seconds)
 
     @staticmethod
     def _rebalance_samples(
@@ -256,6 +295,22 @@ def _is_stronger_roi_observation(
     return roi_signal_confidence(candidate) >= roi_signal_confidence(current)
 
 
+def _select_semantic_result(
+    results: list[SemanticCheckResult],
+) -> SemanticCheckResult:
+    positive_results = [
+        result for result in results if result.verdict in POSITIVE_SEMANTIC_VERDICTS
+    ]
+    assert positive_results
+    return max(
+        positive_results,
+        key=lambda result: (
+            1 if result.verdict == "有" else 0,
+            result.checked_at,
+        ),
+    )
+
+
 def build_semantic_event_metadata(
     transition: SemanticFallbackTransition,
 ) -> dict[str, object]:
@@ -269,6 +324,9 @@ def build_semantic_event_metadata(
                 "raw_output": transition.semantic_result.raw_output,
                 "model": transition.semantic_result.model_name,
                 "checked_at": transition.semantic_result.checked_at.isoformat(),
+                "attempts": transition.vote_summary.attempts,
+                "positive_votes": transition.vote_summary.positive_votes,
+                "verdicts": list(transition.vote_summary.verdicts),
                 "consecutive_yolo_failures": transition.consecutive_yolo_failures,
                 "yolo_support_confidence": transition.yolo_support_confidence,
             },

@@ -15,15 +15,16 @@ from vision_service.vision.roi.models import ROIOccupancyObservation
 
 
 class FakeChecker:
-    def __init__(self, verdict: str) -> None:
-        self._verdict = verdict
+    def __init__(self, verdicts: list[str]) -> None:
+        self._verdicts = verdicts
         self.calls = 0
 
     async def check(self, *, image_bytes: bytes, rule: VisionRule) -> SemanticCheckResult:
+        verdict = self._verdicts[min(self.calls, len(self._verdicts) - 1)]
         self.calls += 1
         return SemanticCheckResult(
-            verdict=self._verdict,  # type: ignore[arg-type]
-            raw_output=self._verdict,
+            verdict=verdict,  # type: ignore[arg-type]
+            raw_output=verdict,
             model_name="mini-vlm",
             checked_at=datetime(2026, 4, 13, 8, 0, tzinfo=UTC),
         )
@@ -57,7 +58,7 @@ def occupied_roi(observed_at: datetime) -> ROIOccupancyObservation:
 
 @pytest.mark.asyncio
 async def test_semantic_fallback_emits_transition_for_confirmed_roi_episode() -> None:
-    checker = FakeChecker("有")
+    checker = FakeChecker(["有", "有", "无法确定"])
     tracker = SemanticFallbackTracker(
         rule=build_rule(),
         threshold_seconds=5,
@@ -85,14 +86,76 @@ async def test_semantic_fallback_emits_transition_for_confirmed_roi_episode() ->
     assert completed is not None
     assert completed.dwell_seconds == 5
     assert completed.semantic_result.verdict == "有"
+    assert completed.vote_summary.attempts == 2
+    assert completed.vote_summary.positive_votes == 2
     assert completed.confidence.source == "roi_vlm_fallback"
     assert len(completed.evidence_samples) == 3
-    assert checker.calls == 1
+    assert checker.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_semantic_fallback_rejects_single_positive_vote_episode() -> None:
+    checker = FakeChecker(["有", "无法确定", "无法确定"])
+    tracker = SemanticFallbackTracker(
+        rule=build_rule(),
+        threshold_seconds=5,
+        sample_interval_seconds=1.0,
+        max_samples=9,
+        consecutive_yolo_failures=2,
+        retry_cooldown_seconds=1.0,
+        max_attempts_per_episode=3,
+        checker=checker,
+    )
+    start = datetime(2026, 4, 13, 8, 2, tzinfo=UTC)
+
+    for second in range(7):
+        transition = await tracker.observe(
+            observed_at=start + timedelta(seconds=second),
+            roi_observation=occupied_roi(start + timedelta(seconds=second)),
+            image_bytes=f"frame-{second}".encode(),
+            yolo_confidence=None,
+            yolo_threshold_observed=False,
+        )
+        assert transition is None
+
+    completed = tracker.force_clear(observed_at=start + timedelta(seconds=8))
+
+    assert completed is None
+    assert checker.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_semantic_fallback_spreads_checks_across_threshold_window() -> None:
+    checker = FakeChecker(["无法确定", "无法确定", "无法确定"])
+    tracker = SemanticFallbackTracker(
+        rule=build_rule(),
+        threshold_seconds=6,
+        sample_interval_seconds=1.0,
+        max_samples=9,
+        consecutive_yolo_failures=2,
+        retry_cooldown_seconds=0.5,
+        max_attempts_per_episode=3,
+        checker=checker,
+    )
+    start = datetime(2026, 4, 13, 8, 4, tzinfo=UTC)
+    call_counts: list[int] = []
+
+    for second in range(6):
+        await tracker.observe(
+            observed_at=start + timedelta(seconds=second),
+            roi_observation=occupied_roi(start + timedelta(seconds=second)),
+            image_bytes=f"frame-{second}".encode(),
+            yolo_confidence=None,
+            yolo_threshold_observed=False,
+        )
+        call_counts.append(checker.calls)
+
+    assert call_counts == [0, 1, 1, 2, 2, 3]
 
 
 @pytest.mark.asyncio
 async def test_semantic_fallback_is_suppressed_after_yolo_threshold_observed() -> None:
-    checker = FakeChecker("有")
+    checker = FakeChecker(["有", "有"])
     tracker = SemanticFallbackTracker(
         rule=build_rule(),
         threshold_seconds=5,

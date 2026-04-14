@@ -18,7 +18,10 @@ from vision_service.vision.entities import TransitionContext
 from vision_service.vision.roi.models import ROIOccupancyObservation
 from vision_service.vision.semantic import SemanticCheckResult
 from vision_service.vision.key_entity_matcher import KeyEntityIdentification
-from vision_service.vision.semantic_fallback import SemanticFallbackTransition
+from vision_service.vision.semantic_fallback import (
+    SemanticFallbackTransition,
+    SemanticVoteSummary,
+)
 from vision_service.vision.worker_events import (
     build_semantic_rule_event,
     build_yolo_rule_event,
@@ -175,6 +178,11 @@ def test_build_semantic_rule_event_includes_semantic_metadata() -> None:
                 model_name="mini-vlm",
                 checked_at=datetime(2026, 4, 13, 8, 0, 30, tzinfo=UTC),
             ),
+            vote_summary=SemanticVoteSummary(
+                attempts=3,
+                positive_votes=2,
+                verdicts=("无法确定", "疑似有", "有"),
+            ),
             confidence=ConfidenceAssessment(
                 source="roi_vlm_fallback",
                 score=0.62,
@@ -189,4 +197,5 @@ def test_build_semantic_rule_event_includes_semantic_metadata() -> None:
     assert event.entity_value == "cat"
     assert event.metadata["decision"]["source"] == "roi_vlm_fallback"
     assert event.metadata["decision"]["semantic_check"]["verdict"] == "疑似有"
+    assert event.metadata["decision"]["semantic_check"]["positive_votes"] == 2
     assert event.evidence[0].metadata["annotations"]["source"] == "roi.zone_crop"

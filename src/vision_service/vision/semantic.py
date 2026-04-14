@@ -44,7 +44,12 @@ def build_semantic_prompt(rule: VisionRule) -> str:
         question = f"这张图是监控目标区域截图。区域内是否有目标正在{behavior}？"
     else:
         question = "这张图是监控目标区域截图。区域内是否有明显的目标对象？"
-    return f"{question} 仅回答：有、疑似有、无法确定。"
+    instructions = (
+        "只有在画面中直接看见与目标相符的真实实体时，才回答“有”或“疑似有”。"
+        "不要根据食盆、玩具、阴影、反光、纹理、静止器具或历史画面猜测。"
+        "如果目标不存在、看不清，或无法确认，回答“无法确定”。"
+    )
+    return f"{question} {instructions} 仅回答：有、疑似有、无法确定。"
 
 
 class OpenAICompatibleSemanticChecker:

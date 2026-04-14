@@ -27,6 +27,7 @@ def test_build_semantic_prompt_uses_entity_and_behavior() -> None:
 
     assert "orange cat" in prompt
     assert "吃东西" in prompt
+    assert "不要根据食盆、玩具、阴影、反光、纹理、静止器具或历史画面猜测" in prompt
     assert prompt.endswith("仅回答：有、疑似有、无法确定。")
 
 
