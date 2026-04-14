@@ -4,6 +4,7 @@ from typing import Any
 
 from vision_service.contracts.catalog import EntityDescriptor
 from vision_service.contracts.callbacks import EvidencePhase, RuleEventStatus
+from vision_service.contracts.control import KeyEntityId
 
 
 @dataclass(slots=True, frozen=True)
@@ -22,6 +23,7 @@ class RuleEvent:
     observed_at: datetime
     dwell_seconds: int
     entity_value: str | None = None
+    key_entity_id: KeyEntityId | None = None
     entities: tuple[EntityDescriptor, ...] = ()
     event_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

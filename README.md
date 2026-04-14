@@ -67,7 +67,7 @@ Recommended workflow:
 - `VISION_SERVICE_YOLO_RUN_MODE`
   Controls how YOLO is scheduled when ROI is enabled. `always` keeps current behavior. `roi_triggered` keeps ROI resident and only requests shared YOLO inference while ROI occupancy is active.
 - `VISION_SERVICE_SEMANTIC_CHECKER_BASE_URL`
-  Optional OpenAI-compatible local VLM endpoint. When unset, ROI/VLM semantic fallback stays disabled.
+  Optional OpenAI-compatible local VLM endpoint. When unset, ROI/VLM semantic fallback stays disabled and rule-level `key_entities` matching cannot run.
 - `VISION_SERVICE_SEMANTIC_CHECKER_MODEL_NAME`
   Model name sent to the semantic checker `chat/completions` request.
 - `VISION_SERVICE_SEMANTIC_CHECKER_CONSECUTIVE_YOLO_FAILURES`
@@ -120,7 +120,8 @@ The service may asynchronously send:
 - With `VISION_SERVICE_ROI_ENABLED=true` and `VISION_SERVICE_YOLO_RUN_MODE=roi_triggered`, ROI stays resident and shared YOLO inference is requested only while ROI occupancy is active.
 - When ROI remains occupied but YOLO keeps missing and the semantic checker is configured, the worker can ask the local VLM to re-check cropped zone keyframes using the rule's entity plus optional behavior text.
 - `threshold_met` is emitted once after a dwell episode ends and exceeded the configured threshold.
-- Evidence is sent as `start`, `middle`, and `end` JPEG frames over the WebSocket session.
+- Evidence is sent as `start`, `middle`, and `end` raw JPEG frames plus structured YOLO detections over the WebSocket session.
+- When a rule includes `key_entities`, the worker crops the triggering tracked entity from those three evidence samples, runs one-to-many VLM matching, aggregates the per-frame votes, and includes the winning `key_entity_id` in the emitted event when available.
 
 ## Validation
 

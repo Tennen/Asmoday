@@ -20,9 +20,13 @@ from vision_service.vision.entities import (
     default_entity_for_rule,
 )
 from vision_service.vision.roi import ROIOccupancyDetector, ROIOccupancyObservation
+from vision_service.vision.key_entity_matcher import (
+    KeyEntityMatcher,
+    OpenAICompatibleKeyEntityMatcher,
+    identify_key_entity,
+)
 from vision_service.vision.semantic import (
     OpenAICompatibleSemanticChecker,
-    SemanticCheckError,
     SemanticChecker,
 )
 from vision_service.vision.semantic_fallback import (
@@ -31,7 +35,7 @@ from vision_service.vision.semantic_fallback import (
 )
 from vision_service.vision.semantic_runtime import (
     build_semantic_fallback_tracker,
-    observe_semantic_fallback,
+    observe_semantic_fallback_safely,
 )
 from vision_service.vision.worker_events import (
     build_semantic_rule_event,
@@ -69,6 +73,7 @@ class RuleVisionWorker:
         emit_rule_event: EmitRuleEvent,
         frame_stream: AnalyzedFrameStream,
         semantic_checker: SemanticChecker | None = None,
+        key_entity_matcher: KeyEntityMatcher | None = None,
     ) -> None:
         self._rule = rule.model_copy(deep=True)
         self._settings = settings
@@ -94,6 +99,11 @@ class RuleVisionWorker:
             semantic_checker
             if semantic_checker is not None
             else OpenAICompatibleSemanticChecker.from_settings(self._settings)
+        )
+        self._key_entity_matcher = (
+            key_entity_matcher
+            if key_entity_matcher is not None
+            else OpenAICompatibleKeyEntityMatcher.from_settings(self._settings)
         )
 
         self._task: asyncio.Task[None] | None = None
@@ -248,8 +258,10 @@ class RuleVisionWorker:
                     observed_at=observed_at,
                     dwell_tracker=dwell_tracker,
                 )
-                semantic_transition = await self._observe_semantic_fallback(
+                semantic_transition, semantic_error = await observe_semantic_fallback_safely(
                     semantic_fallback=semantic_fallback,
+                    rule=self._rule,
+                    settings=self._settings,
                     frame=result.frame,
                     observed_at=observed_at,
                     processed=processed,
@@ -257,6 +269,14 @@ class RuleVisionWorker:
                         dwell_tracker.active or processed.transition is not None
                     ),
                 )
+                if semantic_error is not None:
+                    self._last_error = semantic_error
+                    logger.warning(
+                        "semantic checker failed rule_id=%s camera_device_id=%s error=%s",
+                        self._rule.id,
+                        self._rule.camera.device_id,
+                        semantic_error,
+                    )
                 self._active = dwell_tracker.active or (
                     semantic_fallback.active if semantic_fallback is not None else False
                 )
@@ -322,7 +342,7 @@ class RuleVisionWorker:
             entities=(),
         )
         if batch is not None:
-            target_detections, class_mask = select_target_detections(
+            target_detections, _class_mask = select_target_detections(
                 batch=batch,
                 entity_value=self._rule.entity_selector.value,
             )
@@ -332,8 +352,6 @@ class RuleVisionWorker:
                 detections=tracked_detections,
                 frame=frame,
                 labels=batch.labels,
-                batch=batch,
-                class_mask=class_mask,
                 default_entity=self._default_entity,
                 jpeg_quality=self._settings.jpeg_quality,
             )
@@ -375,50 +393,26 @@ class RuleVisionWorker:
             return True
         return self._roi_detector.current_state in {"candidate_occupied", "occupied"}
 
-    async def _observe_semantic_fallback(
-        self,
-        *,
-        semantic_fallback: SemanticFallbackTracker | None,
-        frame: np.ndarray[Any, Any],
-        observed_at: datetime,
-        processed: ProcessedFrame,
-        yolo_threshold_observed: bool,
-    ) -> SemanticFallbackTransition | None:
-        try:
-            return await observe_semantic_fallback(
-                rule=self._rule,
-                settings=self._settings,
-                semantic_fallback=semantic_fallback,
-                frame=frame,
-                observed_at=observed_at,
-                processed=processed,
-                yolo_threshold_observed=yolo_threshold_observed,
-            )
-        except SemanticCheckError as exc:
-            self._last_error = str(exc)
-            logger.warning(
-                "semantic checker failed rule_id=%s camera_device_id=%s error=%s",
-                self._rule.id,
-                self._rule.camera.device_id,
-                exc,
-            )
-            return None
-
     async def _emit_transition(
         self,
         transition: DwellTransition,
         *,
         context: TransitionContext,
     ) -> None:
+        key_entity_identification = await identify_key_entity(
+            evidence_samples=transition.evidence_samples,
+            key_entities=self._rule.key_entities,
+            matcher=self._key_entity_matcher,
+        )
         try:
-            await self._emit_rule_event(
-                build_yolo_rule_event(
-                    rule=self._rule,
-                    transition=transition,
-                    context=context,
-                    roi_observation=self._last_roi_observation,
-                )
+            event = build_yolo_rule_event(
+                rule=self._rule,
+                transition=transition,
+                context=context,
+                roi_observation=self._last_roi_observation,
+                key_entity_identification=key_entity_identification,
             )
+            await self._emit_rule_event(event)
         except Exception as exc:  # noqa: BLE001
             self._last_error = str(exc)
             logger.warning(
@@ -432,7 +426,19 @@ class RuleVisionWorker:
             )
             return
 
-        self._last_error = None
+        if (
+            key_entity_identification is not None
+            and key_entity_identification.error_message is not None
+        ):
+            self._last_error = key_entity_identification.error_message
+            logger.warning(
+                "key entity match degraded rule_id=%s camera_device_id=%s error=%s",
+                self._rule.id,
+                self._rule.camera.device_id,
+                key_entity_identification.error_message,
+            )
+        else:
+            self._last_error = None
         logger.info(
             "emitted transition rule_id=%s camera_device_id=%s "
             "status=%s track_id=%s dwell_seconds=%s",

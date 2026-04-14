@@ -2,10 +2,13 @@ from typing import Any
 
 import numpy as np
 
-from vision_service.contracts import EntityDescriptor, VisionRule
+from vision_service.contracts import EntityDescriptor, EvidenceDetection, VisionRule
+from vision_service.runtime.dwell import TrackEvidence
 from vision_service.vision.backend import DetectionBatch
 from vision_service.vision.entities import (
     ZoneObservation,
+    build_detection_box,
+    build_evidence_detection,
     dedupe_entities,
     entity_descriptor_for_detection,
 )
@@ -40,8 +43,6 @@ def visible_tracks_in_zone(
     detections: Any,
     frame: np.ndarray[Any, Any],
     labels: dict[int, str],
-    batch: DetectionBatch,
-    class_mask: np.ndarray[Any, Any] | None,
     default_entity: EntityDescriptor | None,
     jpeg_quality: int,
 ) -> ZoneObservation:
@@ -62,6 +63,8 @@ def visible_tracks_in_zone(
     track_ids: list[int] = []
     track_entities: dict[int, EntityDescriptor] = {}
     track_confidences: dict[int, float] = {}
+    track_boxes: dict[int, tuple[float, float, float, float]] = {}
+    track_detections: dict[int, EvidenceDetection] = {}
     class_ids = detections.class_id
     confidences = detections.confidence
 
@@ -75,23 +78,59 @@ def visible_tracks_in_zone(
         if zone_left <= center_x <= zone_right and zone_top <= center_y <= zone_bottom:
             track_id = int(tracker_id)
             track_ids.append(track_id)
-            track_entities[track_id] = entity_descriptor_for_detection(
+            entity = entity_descriptor_for_detection(
                 class_id=int(class_ids[index]) if class_ids is not None else None,
                 labels=labels,
                 default_entity=default_entity,
             )
+            track_entities[track_id] = entity
             if confidences is not None:
                 track_confidences[track_id] = float(confidences[index])
+            track_boxes[track_id] = tuple(float(value) for value in bounding_box)
+            track_detections[track_id] = build_evidence_detection(
+                entity=entity,
+                confidence=(
+                    float(confidences[index]) if confidences is not None else None
+                ),
+                track_id=track_id,
+                box=build_detection_box(
+                    left=float(bounding_box[0]),
+                    top=float(bounding_box[1]),
+                    right=float(bounding_box[2]),
+                    bottom=float(bounding_box[3]),
+                    frame_width=frame_width,
+                    frame_height=frame_height,
+                ),
+            )
 
-    visible_tracks: dict[int, bytes | None] = {}
+    visible_tracks: dict[int, TrackEvidence] = {}
     if track_ids:
-        encoded_frame = encode_annotated_frame(
-            batch=batch,
+        encoded_frame = encode_frame(
             frame=frame,
-            class_mask=class_mask,
             jpeg_quality=jpeg_quality,
         )
-        visible_tracks = {track_id: encoded_frame for track_id in track_ids}
+        detections_in_zone = tuple(
+            track_detections[track_id]
+            for track_id in track_ids
+            if track_id in track_detections
+        )
+        visible_tracks = {
+            track_id: TrackEvidence(
+                image_bytes=encoded_frame,
+                detections=_prioritize_detection(
+                    primary_track_id=track_id,
+                    detections=detections_in_zone,
+                ),
+                crop_bytes=encode_frame(
+                    frame=crop_detection_frame(
+                        frame=frame,
+                        bounding_box=track_boxes[track_id],
+                    ),
+                    jpeg_quality=jpeg_quality,
+                ),
+            )
+            for track_id in track_ids
+        }
 
     return ZoneObservation(
         visible_tracks=visible_tracks,
@@ -99,6 +138,44 @@ def visible_tracks_in_zone(
         track_confidences=track_confidences,
         entities=dedupe_entities(track_entities.values()),
     )
+
+
+def crop_detection_frame(
+    *,
+    frame: np.ndarray[Any, Any],
+    bounding_box: tuple[float, float, float, float],
+) -> np.ndarray[Any, Any]:
+    left, top, right, bottom = bounding_box
+    frame_height, frame_width = frame.shape[:2]
+    clipped_left = max(0, min(frame_width - 1, int(np.floor(left))))
+    clipped_top = max(0, min(frame_height - 1, int(np.floor(top))))
+    clipped_right = max(
+        clipped_left + 1,
+        min(frame_width, int(np.ceil(right))),
+    )
+    clipped_bottom = max(
+        clipped_top + 1,
+        min(frame_height, int(np.ceil(bottom))),
+    )
+    return frame[clipped_top:clipped_bottom, clipped_left:clipped_right]
+
+
+def _prioritize_detection(
+    *,
+    primary_track_id: int,
+    detections: tuple[EvidenceDetection, ...],
+) -> tuple[EvidenceDetection, ...]:
+    ordered = [
+        detection
+        for detection in detections
+        if getattr(detection, "track_id", None) == str(primary_track_id)
+    ]
+    ordered.extend(
+        detection
+        for detection in detections
+        if getattr(detection, "track_id", None) != str(primary_track_id)
+    )
+    return tuple(ordered)
 
 
 def crop_zone_frame(

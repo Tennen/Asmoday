@@ -1,8 +1,13 @@
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from vision_service.contracts import EntityDescriptor, VisionRule
-from vision_service.runtime.dwell import DwellTransition
+from vision_service.contracts import (
+    EntityDescriptor,
+    EvidenceDetection,
+    NormalizedBoundingBox,
+    VisionRule,
+)
+from vision_service.runtime.dwell import DwellTransition, EvidenceSample, TrackEvidence
 from vision_service.vision.roi.models import ROIOccupancyObservation
 
 
@@ -15,7 +20,7 @@ class TransitionContext:
 
 @dataclass(slots=True, frozen=True)
 class ZoneObservation:
-    visible_tracks: dict[int, bytes | None]
+    visible_tracks: dict[int, TrackEvidence]
     track_entities: dict[int, EntityDescriptor]
     entities: tuple[EntityDescriptor, ...]
     track_confidences: dict[int, float] = field(default_factory=dict)
@@ -109,10 +114,49 @@ def dedupe_entities(
     return tuple(ordered)
 
 
-def evidence_metadata() -> dict[str, dict[str, str]]:
+def build_detection_box(
+    *,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    frame_width: int,
+    frame_height: int,
+) -> NormalizedBoundingBox:
+    return NormalizedBoundingBox(
+        x=left / frame_width,
+        y=top / frame_height,
+        width=(right - left) / frame_width,
+        height=(bottom - top) / frame_height,
+    )
+
+
+def build_evidence_detection(
+    *,
+    entity: EntityDescriptor,
+    confidence: float | None,
+    track_id: int,
+    box: NormalizedBoundingBox,
+) -> EvidenceDetection:
+    return EvidenceDetection(
+        kind=entity.kind,
+        value=entity.value,
+        display_name=entity.display_name,
+        confidence=confidence,
+        track_id=str(track_id),
+        box=box,
+    )
+
+
+def evidence_metadata(sample: EvidenceSample) -> dict[str, object]:
     return {
         "annotations": {
-            "image_kind": "annotated",
-            "source": "ultralytics.plot",
+            "image_kind": "raw",
+            "coordinate_space": "normalized_xywh",
+            "source": "ultralytics.boxes",
+            "detections": [
+                detection.model_dump(mode="json", exclude_none=True)
+                for detection in sample.detections
+            ],
         }
     }

@@ -132,6 +132,7 @@ Sent once after a dwell episode ends and the completed stay exceeded the configu
         "observed_at": "2026-04-11T08:00:10Z",
         "dwell_seconds": 5,
         "entity_value": "cat",
+        "key_entity_id": 101,
         "entities": [
           {
             "kind": "label",
@@ -156,11 +157,13 @@ Sent once after a dwell episode ends and the completed stay exceeded the configu
 `rule_events` entity semantics:
 
 - `entity_value` remains the backward-compatible primary entity identifier.
+- `key_entity_id` is optional. When present, it echoes the winning `rules[].key_entities[].id` selected from aggregated VLM matching over the event's `start` / `middle` / `end` evidence samples.
 - `entities` is optional, but when present it carries the complete set of recognized entities currently inside the configured zone for that emitted event.
 - When Gateway syncs a rule whose `entity_selector.value == ""`, Vision Service must treat that rule as "no class filter" and must not gate detections by entity class before dwell aggregation.
 - For wildcard rules, events must include every in-zone recognized entity in `entities`.
 - Gateway uses `entities` for persisted history display and entity-based filtering in Admin, so Vision Service should keep the array stable, deduplicated by `kind + value`, and ordered by its primary/most relevant entity first.
 - `metadata.decision` may carry source and scoring details such as `source`, `confidence_score`, `confidence_breakdown`, and semantic checker verdicts when ROI/VLM fallback was used.
+- `metadata.key_entity_match` may carry multi-frame vote details such as frame-level match outputs, vote counts, final winner, model name, and explicit failure / skipped reasons when key-entity enrichment was requested but could not complete.
 
 ### `evidence`
 
@@ -371,6 +374,19 @@ Request:
           "value": "cat"
         },
         "behavior": "eating",
+        "key_entities": [
+          {
+            "id": 101,
+            "image": {
+              "base64": "..."
+            },
+            "description": "orange tabby with a blue collar"
+          },
+          {
+            "id": 102,
+            "description": "solid black cat with a white chest"
+          }
+        ],
         "zone": {
           "x": 0.12,
           "y": 0.28,
@@ -405,6 +421,9 @@ Important semantics:
 - rules only run while the WebSocket session remains connected.
 - `entity_selector.value == ""` means the rule is intentionally wildcarded. Vision Service must still honor the rule's zone and dwell threshold, but it must skip any class-level inclusion gate for that rule.
 - `behavior` is optional. When present, Vision Service may combine it with the entity selector to build a short semantic-check prompt for an optional local VLM fallback path.
+- `key_entities` is optional. When present, Vision Service treats it as the per-rule candidate set for post-event VLM identity matching.
+- Each `key_entities[]` entry must provide a stable `id` plus at least one of `image` or `description`.
+- `key_entities[].image.content_type` is optional and defaults to `image/jpeg` when omitted.
 
 ## Ordering Notes
 

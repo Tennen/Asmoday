@@ -24,6 +24,7 @@ def build_event_callback_payload(
                 observed_at=event.observed_at,
                 dwell_seconds=event.dwell_seconds,
                 entity_value=event.entity_value,
+                key_entity_id=event.key_entity_id,
                 entities=list(event.entities) or None,
                 metadata=event.metadata or None,
             )

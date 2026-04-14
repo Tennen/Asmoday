@@ -2,14 +2,25 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Mapping
 
+from vision_service.contracts.callbacks import EvidenceDetection
+
 
 TransitionStatus = Literal["threshold_met"]
+
+
+@dataclass(slots=True, frozen=True)
+class TrackEvidence:
+    image_bytes: bytes | None = None
+    detections: tuple[EvidenceDetection, ...] = ()
+    crop_bytes: bytes | None = None
 
 
 @dataclass(slots=True, frozen=True)
 class EvidenceSample:
     captured_at: datetime
     image_bytes: bytes
+    detections: tuple[EvidenceDetection, ...] = ()
+    crop_bytes: bytes | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -56,7 +67,7 @@ class RuleDwellTracker:
         self,
         *,
         observed_at: datetime,
-        visible_tracks: Mapping[int, bytes | None],
+        visible_tracks: Mapping[int, TrackEvidence],
     ) -> DwellTransition | None:
         current_ids = set(visible_tracks)
         removed_tracks = {
@@ -67,7 +78,7 @@ class RuleDwellTracker:
         for track_id in removed_tracks:
             del self._tracks[track_id]
 
-        for track_id, image_bytes in visible_tracks.items():
+        for track_id, evidence in visible_tracks.items():
             episode = self._tracks.get(track_id)
             if episode is None:
                 episode = TrackEpisode(
@@ -90,7 +101,7 @@ class RuleDwellTracker:
             self._maybe_store_sample(
                 episode=episode,
                 observed_at=observed_at,
-                image_bytes=image_bytes,
+                evidence=evidence,
                 force=crossed_threshold,
             )
             if crossed_threshold:
@@ -130,10 +141,10 @@ class RuleDwellTracker:
         *,
         episode: TrackEpisode,
         observed_at: datetime,
-        image_bytes: bytes | None,
+        evidence: TrackEvidence,
         force: bool,
     ) -> None:
-        if image_bytes is None:
+        if evidence.image_bytes is None:
             return
         if (
             not force
@@ -148,7 +159,9 @@ class RuleDwellTracker:
         episode.samples.append(
             EvidenceSample(
                 captured_at=observed_at,
-                image_bytes=image_bytes,
+                image_bytes=evidence.image_bytes,
+                detections=evidence.detections,
+                crop_bytes=evidence.crop_bytes,
             )
         )
         if len(episode.samples) > self._max_samples:

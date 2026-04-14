@@ -17,6 +17,7 @@ def test_build_event_callback_payload_includes_entities() -> None:
         observed_at=observed_at,
         dwell_seconds=5,
         entity_value="cat",
+        key_entity_id=101,
         entities=(
             EntityDescriptor(kind="label", value="cat", display_name="Cat"),
             EntityDescriptor(kind="label", value="dog", display_name="Dog"),
@@ -32,6 +33,7 @@ def test_build_event_callback_payload_includes_entities() -> None:
     record = payload.events[0]
     assert record.event_id == "vision-evt-1"
     assert record.entity_value == "cat"
+    assert record.key_entity_id == 101
     assert [entity.value for entity in record.entities or []] == ["cat", "dog"]
     assert record.metadata == {"track_id": "7"}
 
@@ -51,8 +53,10 @@ def test_build_evidence_callback_payload_includes_annotation_metadata() -> None:
                 image_bytes=b"image",
                 metadata={
                     "annotations": {
-                        "image_kind": "annotated",
-                        "source": "ultralytics.plot",
+                        "image_kind": "raw",
+                        "coordinate_space": "normalized_xywh",
+                        "source": "ultralytics.boxes",
+                        "detections": [],
                     }
                 },
             ),
@@ -70,7 +74,9 @@ def test_build_evidence_callback_payload_includes_annotation_metadata() -> None:
     assert capture.image_base64 == "aW1hZ2U="
     assert capture.metadata == {
         "annotations": {
-            "image_kind": "annotated",
-            "source": "ultralytics.plot",
+            "image_kind": "raw",
+            "coordinate_space": "normalized_xywh",
+            "source": "ultralytics.boxes",
+            "detections": [],
         }
     }

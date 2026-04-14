@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from vision_service.runtime.dwell import RuleDwellTracker
+from vision_service.runtime.dwell import RuleDwellTracker, TrackEvidence
 
 
 def test_completed_threshold_event_is_emitted_once_per_episode() -> None:
@@ -13,7 +13,7 @@ def test_completed_threshold_event_is_emitted_once_per_episode() -> None:
     for second in range(8):
         transition = tracker.observe(
             observed_at=start + timedelta(seconds=second),
-            visible_tracks={7: f"frame-{second}".encode()},
+            visible_tracks={7: TrackEvidence(image_bytes=f"frame-{second}".encode())},
         )
         assert transition is None
 
@@ -39,11 +39,11 @@ def test_force_clear_emits_completed_threshold_event_for_active_episode() -> Non
 
     tracker.observe(
         observed_at=observed_at,
-        visible_tracks={1: b"frame"},
+        visible_tracks={1: TrackEvidence(image_bytes=b"frame")},
     )
     tracker.observe(
         observed_at=observed_at + timedelta(seconds=2),
-        visible_tracks={1: b"frame"},
+        visible_tracks={1: TrackEvidence(image_bytes=b"frame")},
     )
 
     cleared = tracker.force_clear(
@@ -66,7 +66,7 @@ def test_evidence_samples_span_the_full_episode_with_middle_near_midpoint() -> N
     for second in range(13):
         transition = tracker.observe(
             observed_at=start + timedelta(seconds=second),
-            visible_tracks={7: f"frame-{second}".encode()},
+            visible_tracks={7: TrackEvidence(image_bytes=f"frame-{second}".encode())},
         )
         assert transition is None
 

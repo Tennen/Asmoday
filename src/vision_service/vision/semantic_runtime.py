@@ -5,7 +5,7 @@ import numpy as np
 from vision_service.contracts import VisionRule
 from vision_service.settings import Settings
 from vision_service.vision.entities import ProcessedFrame
-from vision_service.vision.semantic import SemanticChecker
+from vision_service.vision.semantic import SemanticCheckError, SemanticChecker
 from vision_service.vision.semantic_fallback import (
     SemanticFallbackTracker,
     SemanticFallbackTransition,
@@ -72,3 +72,30 @@ async def observe_semantic_fallback(
         ),
         yolo_threshold_observed=yolo_threshold_observed,
     )
+
+
+async def observe_semantic_fallback_safely(
+    *,
+    rule: VisionRule,
+    settings: Settings,
+    semantic_fallback: SemanticFallbackTracker | None,
+    frame: np.ndarray,
+    observed_at: datetime,
+    processed: ProcessedFrame,
+    yolo_threshold_observed: bool,
+) -> tuple[SemanticFallbackTransition | None, str | None]:
+    try:
+        return (
+            await observe_semantic_fallback(
+                rule=rule,
+                settings=settings,
+                semantic_fallback=semantic_fallback,
+                frame=frame,
+                observed_at=observed_at,
+                processed=processed,
+                yolo_threshold_observed=yolo_threshold_observed,
+            ),
+            None,
+        )
+    except SemanticCheckError as exc:
+        return None, str(exc)

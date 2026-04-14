@@ -2,6 +2,7 @@ from vision_service.contracts import EntityDescriptor, VisionRule
 from vision_service.runtime.dwell import DwellTransition
 from vision_service.runtime.events import EventEvidence, RuleEvent
 from vision_service.vision.entities import TransitionContext, evidence_metadata
+from vision_service.vision.key_entity_matcher import KeyEntityIdentification
 from vision_service.vision.roi.models import ROIOccupancyObservation
 from vision_service.vision.confidence import score_yolo_event
 from vision_service.vision.semantic_fallback import (
@@ -17,6 +18,7 @@ def build_yolo_rule_event(
     transition: DwellTransition,
     context: TransitionContext,
     roi_observation: ROIOccupancyObservation | None,
+    key_entity_identification: KeyEntityIdentification | None = None,
 ) -> RuleEvent:
     evidence: tuple[EventEvidence, ...] = ()
     if transition.status == "threshold_met" and transition.evidence_samples:
@@ -26,7 +28,7 @@ def build_yolo_rule_event(
                 phase=phase,
                 captured_at=sample.captured_at,
                 image_bytes=sample.image_bytes,
-                metadata=evidence_metadata(),
+                metadata=evidence_metadata(sample),
             )
             for phase, sample in zip(phases, transition.evidence_samples)
         )
@@ -46,6 +48,8 @@ def build_yolo_rule_event(
     }
     if transition.track_id is not None:
         metadata["track_id"] = str(transition.track_id)
+    if key_entity_identification is not None:
+        metadata["key_entity_match"] = key_entity_identification.metadata
 
     return RuleEvent(
         rule_id=rule.id,
@@ -55,6 +59,11 @@ def build_yolo_rule_event(
         dwell_seconds=transition.dwell_seconds,
         entity_value=(
             context.primary_entity.value if context.primary_entity is not None else None
+        ),
+        key_entity_id=(
+            key_entity_identification.key_entity_id
+            if key_entity_identification is not None
+            else None
         ),
         entities=context.entities,
         metadata=metadata,

@@ -1,7 +1,10 @@
 from datetime import datetime
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+KeyEntityId: TypeAlias = str | int
 
 
 class CameraIdentity(BaseModel):
@@ -25,6 +28,44 @@ class EntitySelector(BaseModel):
 
     kind: Literal["label"] = "label"
     value: str
+
+
+class KeyEntityImage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base64: str = Field(min_length=1)
+    content_type: str = "image/jpeg"
+
+
+class KeyEntityReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: KeyEntityId
+    image: KeyEntityImage | None = None
+    description: str | None = Field(default=None, min_length=1)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: KeyEntityId) -> KeyEntityId:
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("key entity id must not be blank")
+        return value
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> "KeyEntityReference":
+        if self.image is None and self.description is None:
+            raise ValueError("key entity must provide image or description")
+        return self
 
 
 class ZoneRect(BaseModel):
@@ -54,6 +95,7 @@ class VisionRule(BaseModel):
     rtsp_source: RTSPSource
     entity_selector: EntitySelector
     behavior: str | None = Field(default=None, min_length=1)
+    key_entities: list[KeyEntityReference] = Field(default_factory=list)
     zone: ZoneRect
     stay_threshold_seconds: int = Field(ge=1)
 
@@ -65,6 +107,20 @@ class VisionRule(BaseModel):
         if isinstance(value, str):
             stripped = value.strip()
             return stripped or None
+        return value
+
+    @field_validator("key_entities")
+    @classmethod
+    def validate_unique_key_entity_ids(
+        cls,
+        value: list[KeyEntityReference],
+    ) -> list[KeyEntityReference]:
+        seen: set[str] = set()
+        for entity in value:
+            key = str(entity.id)
+            if key in seen:
+                raise ValueError(f"duplicate key entity id: {entity.id!r}")
+            seen.add(key)
         return value
 
 

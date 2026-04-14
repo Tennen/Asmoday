@@ -4,6 +4,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from vision_service.contracts.catalog import EntityDescriptor
+from vision_service.contracts.control import KeyEntityId
 
 
 ServiceStatus = Literal["unknown", "healthy", "degraded", "unhealthy", "stopped"]
@@ -21,6 +22,23 @@ class RuntimeStatusPayload(BaseModel):
     runtime: dict[str, Any] | None = None
 
 
+class NormalizedBoundingBox(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+    width: float = Field(gt=0.0, le=1.0)
+    height: float = Field(gt=0.0, le=1.0)
+
+
+class EvidenceDetection(EntityDescriptor):
+    model_config = ConfigDict(extra="forbid")
+
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    track_id: str | None = None
+    box: NormalizedBoundingBox
+
+
 class EventRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -31,6 +49,7 @@ class EventRecord(BaseModel):
     observed_at: datetime
     dwell_seconds: int = Field(ge=0)
     entity_value: str | None = None
+    key_entity_id: KeyEntityId | None = None
     entities: list[EntityDescriptor] | None = None
     metadata: dict[str, Any] | None = None
 

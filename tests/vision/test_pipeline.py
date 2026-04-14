@@ -6,15 +6,20 @@ import supervision as sv
 from vision_service.contracts import (
     CameraIdentity,
     EntityDescriptor,
+    EvidenceDetection,
     EntitySelector,
+    KeyEntityImage,
+    KeyEntityReference,
+    NormalizedBoundingBox,
     RTSPSource,
     VisionRule,
     ZoneRect,
 )
-from vision_service.runtime.dwell import DwellTransition, EvidenceSample
+from vision_service.runtime.dwell import DwellTransition, EvidenceSample, TrackEvidence
 from vision_service.settings import Settings
 from vision_service.vision.backend import DetectionBatch
 from vision_service.vision.entities import TransitionContext
+from vision_service.vision.key_entity_matcher import KeyEntityFrameMatch
 from vision_service.vision.pipeline import RuleVisionWorker
 from vision_service.vision.roi.models import ROIOccupancyObservation
 from vision_service.vision.zone import (
@@ -44,7 +49,11 @@ class FakeResult:
         return np.zeros((4, 4, 3), dtype=np.uint8)
 
 
-def build_rule(*, entity_value: str) -> VisionRule:
+def build_rule(
+    *,
+    entity_value: str,
+    key_entities: list[KeyEntityReference] | None = None,
+) -> VisionRule:
     return VisionRule(
         id="rule-1",
         name="Rule 1",
@@ -52,6 +61,7 @@ def build_rule(*, entity_value: str) -> VisionRule:
         camera=CameraIdentity(device_id="camera-1"),
         rtsp_source=RTSPSource(url="rtsp://camera/test"),
         entity_selector=EntitySelector(value=entity_value),
+        key_entities=key_entities or [],
         zone=ZoneRect(x=0.1, y=0.1, width=0.8, height=0.8),
         stay_threshold_seconds=5,
     )
@@ -63,12 +73,15 @@ def build_worker(
     emit_rule_event,
     frame_stream: object | None = None,
     settings: Settings | None = None,
+    key_entities: list[KeyEntityReference] | None = None,
+    key_entity_matcher: object | None = None,
 ) -> RuleVisionWorker:
     return RuleVisionWorker(
-        rule=build_rule(entity_value=entity_value),
+        rule=build_rule(entity_value=entity_value, key_entities=key_entities),
         settings=settings or Settings(),
         emit_rule_event=emit_rule_event,
         frame_stream=frame_stream or DummyStream(),
+        key_entity_matcher=key_entity_matcher,
     )
 
 
@@ -145,7 +158,7 @@ def test_visible_tracks_in_zone_skips_encoding_when_no_detection_is_in_zone(
 
     worker = build_worker(entity_value="cat", emit_rule_event=emit_rule_event)
     monkeypatch.setattr(
-        "vision_service.vision.zone.encode_annotated_frame",
+        "vision_service.vision.zone.encode_frame",
         lambda **kwargs: pytest.fail("encoding should be skipped"),
     )
     detections = sv.Detections(
@@ -165,8 +178,6 @@ def test_visible_tracks_in_zone_skips_encoding_when_no_detection_is_in_zone(
         detections=detections,
         frame=np.zeros((10, 10, 3), dtype=np.uint8),
         labels=batch.labels,
-        batch=batch,
-        class_mask=np.array([True], dtype=bool),
         default_entity=worker._default_entity,
         jpeg_quality=worker._settings.jpeg_quality,
     )
@@ -244,7 +255,7 @@ async def test_process_frame_does_not_reuse_last_confirmed_tracks_when_detection
 
     class FakeDwellTracker:
         def __init__(self) -> None:
-            self.visible_tracks: dict[int, bytes | None] | None = None
+            self.visible_tracks: dict[int, TrackEvidence] | None = None
 
         def observe(self, *, observed_at, visible_tracks):  # noqa: ANN001, ANN201
             self.visible_tracks = visible_tracks
@@ -286,14 +297,62 @@ async def test_emit_transition_includes_entities_and_annotation_metadata() -> No
             EvidenceSample(
                 captured_at=datetime(2026, 4, 12, 7, 59, 58, tzinfo=UTC),
                 image_bytes=b"start",
+                detections=(
+                    EvidenceDetection(
+                        kind="label",
+                        value="dog",
+                        display_name="Dog",
+                        confidence=0.94,
+                        track_id="7",
+                        box=NormalizedBoundingBox(
+                            x=0.1,
+                            y=0.2,
+                            width=0.3,
+                            height=0.4,
+                        ),
+                    ),
+                ),
+                crop_bytes=b"crop-start",
             ),
             EvidenceSample(
                 captured_at=datetime(2026, 4, 12, 8, 0, tzinfo=UTC),
                 image_bytes=b"middle",
+                detections=(
+                    EvidenceDetection(
+                        kind="label",
+                        value="dog",
+                        display_name="Dog",
+                        confidence=0.95,
+                        track_id="7",
+                        box=NormalizedBoundingBox(
+                            x=0.11,
+                            y=0.21,
+                            width=0.31,
+                            height=0.41,
+                        ),
+                    ),
+                ),
+                crop_bytes=b"crop-middle",
             ),
             EvidenceSample(
                 captured_at=datetime(2026, 4, 12, 8, 0, 2, tzinfo=UTC),
                 image_bytes=b"end",
+                detections=(
+                    EvidenceDetection(
+                        kind="label",
+                        value="dog",
+                        display_name="Dog",
+                        confidence=0.91,
+                        track_id="7",
+                        box=NormalizedBoundingBox(
+                            x=0.12,
+                            y=0.22,
+                            width=0.32,
+                            height=0.42,
+                        ),
+                    ),
+                ),
+                crop_bytes=b"crop-end",
             ),
         ),
     )
@@ -318,11 +377,93 @@ async def test_emit_transition_includes_entities_and_annotation_metadata() -> No
     assert event.entity_value == "dog"
     assert [entity.value for entity in event.entities] == ["dog", "cat"]
     assert all(
-        capture.metadata == {
-            "annotations": {
-                "image_kind": "annotated",
-                "source": "ultralytics.plot",
-            }
-        }
+        capture.metadata["annotations"]["image_kind"] == "raw"
         for capture in event.evidence
     )
+    assert all(
+        capture.metadata["annotations"]["source"] == "ultralytics.boxes"
+        for capture in event.evidence
+    )
+    assert event.evidence[0].metadata["annotations"]["detections"][0]["track_id"] == "7"
+
+
+@pytest.mark.asyncio
+async def test_emit_transition_includes_key_entity_vote_result() -> None:
+    emitted_events = []
+
+    async def emit_rule_event(event):  # noqa: ANN001, ANN202
+        emitted_events.append(event)
+        return "vision-evt-2"
+
+    class FakeKeyEntityMatcher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def match(self, *, image_bytes: bytes, key_entities):  # noqa: ANN001, ANN201
+            self.calls += 1
+            assert image_bytes.startswith(b"crop-")
+            assert len(key_entities) == 2
+            return KeyEntityFrameMatch(
+                key_entity_id=101,
+                confidence=0.88,
+                reason="花纹一致",
+                raw_output='{"key_entity_id":101}',
+                model_name="mini-vlm",
+                checked_at=datetime(2026, 4, 12, 8, 0, tzinfo=UTC),
+            )
+
+    matcher = FakeKeyEntityMatcher()
+    worker = build_worker(
+        entity_value="dog",
+        emit_rule_event=emit_rule_event,
+        key_entities=[
+            KeyEntityReference(
+                id=101,
+                image=KeyEntityImage(base64="aW1hZ2U="),
+            ),
+            KeyEntityReference(
+                id=102,
+                description="黑色项圈",
+            ),
+        ],
+        key_entity_matcher=matcher,
+    )
+    transition = DwellTransition(
+        status="threshold_met",
+        observed_at=datetime(2026, 4, 12, 8, 0, tzinfo=UTC),
+        dwell_seconds=5,
+        track_id=7,
+        evidence_samples=(
+            EvidenceSample(
+                captured_at=datetime(2026, 4, 12, 7, 59, 58, tzinfo=UTC),
+                image_bytes=b"start",
+                crop_bytes=b"crop-start",
+            ),
+            EvidenceSample(
+                captured_at=datetime(2026, 4, 12, 8, 0, tzinfo=UTC),
+                image_bytes=b"middle",
+                crop_bytes=b"crop-middle",
+            ),
+            EvidenceSample(
+                captured_at=datetime(2026, 4, 12, 8, 0, 2, tzinfo=UTC),
+                image_bytes=b"end",
+                crop_bytes=b"crop-end",
+            ),
+        ),
+    )
+
+    await worker._emit_transition(
+        transition,
+        context=TransitionContext(
+            primary_entity=EntityDescriptor(
+                kind="label",
+                value="dog",
+                display_name="Dog",
+            ),
+        ),
+    )
+
+    assert matcher.calls == 3
+    assert emitted_events[0].key_entity_id == 101
+    assert emitted_events[0].metadata["key_entity_match"]["winner_id"] == 101
+    assert emitted_events[0].metadata["key_entity_match"]["status"] == "matched"
