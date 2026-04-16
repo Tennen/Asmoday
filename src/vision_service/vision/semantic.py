@@ -1,4 +1,3 @@
-import asyncio
 from base64 import b64encode
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -8,6 +7,10 @@ from urllib import error, request
 
 from vision_service.contracts import VisionRule
 from vision_service.settings import Settings
+from vision_service.vision.model_queue import (
+    LocalModelRequestQueue,
+    get_local_model_request_queue,
+)
 
 SemanticVerdict = Literal["有", "疑似有", "无法确定"]
 
@@ -60,16 +63,19 @@ class OpenAICompatibleSemanticChecker:
         model_name: str,
         api_key: str | None,
         timeout_seconds: float,
+        request_queue: LocalModelRequestQueue | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model_name = model_name
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
+        self._request_queue = request_queue or get_local_model_request_queue()
 
     @classmethod
     def from_settings(
         cls,
         settings: Settings,
+        request_queue: LocalModelRequestQueue | None = None,
     ) -> "OpenAICompatibleSemanticChecker | None":
         if not settings.semantic_checker_enabled:
             return None
@@ -80,6 +86,7 @@ class OpenAICompatibleSemanticChecker:
             model_name=settings.semantic_checker_model_name,
             api_key=settings.semantic_checker_api_key,
             timeout_seconds=settings.semantic_checker_timeout_seconds,
+            request_queue=request_queue,
         )
 
     async def check(
@@ -111,7 +118,10 @@ class OpenAICompatibleSemanticChecker:
                 }
             ],
         }
-        response_json = await asyncio.to_thread(self._request_json, payload)
+        response_json = await self._request_queue.run(
+            operation="semantic_check",
+            call=lambda: self._request_json(payload),
+        )
         raw_output = _extract_message_text(response_json)
         verdict = parse_semantic_verdict(raw_output)
         return SemanticCheckResult(
@@ -147,6 +157,11 @@ class OpenAICompatibleSemanticChecker:
         except error.URLError as exc:
             raise SemanticCheckError(
                 f"semantic checker request failed reason={exc.reason}"
+            ) from exc
+        except TimeoutError as exc:
+            raise SemanticCheckError(
+                "semantic checker request timed out "
+                f"timeout_seconds={self._timeout_seconds}"
             ) from exc
         except json.JSONDecodeError as exc:
             raise SemanticCheckError("semantic checker returned invalid JSON") from exc

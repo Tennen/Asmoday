@@ -1,4 +1,3 @@
-import asyncio
 from base64 import b64encode
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,6 +9,10 @@ from vision_service.contracts.callbacks import EvidencePhase
 from vision_service.contracts.control import KeyEntityId, KeyEntityReference
 from vision_service.runtime.dwell import EvidenceSample
 from vision_service.settings import Settings
+from vision_service.vision.model_queue import (
+    LocalModelRequestQueue,
+    get_local_model_request_queue,
+)
 
 
 class KeyEntityMatchError(RuntimeError):
@@ -50,16 +53,19 @@ class OpenAICompatibleKeyEntityMatcher:
         model_name: str,
         api_key: str | None,
         timeout_seconds: float,
+        request_queue: LocalModelRequestQueue | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model_name = model_name
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
+        self._request_queue = request_queue or get_local_model_request_queue()
 
     @classmethod
     def from_settings(
         cls,
         settings: Settings,
+        request_queue: LocalModelRequestQueue | None = None,
     ) -> "OpenAICompatibleKeyEntityMatcher | None":
         if not settings.semantic_checker_enabled:
             return None
@@ -70,6 +76,7 @@ class OpenAICompatibleKeyEntityMatcher:
             model_name=settings.semantic_checker_model_name,
             api_key=settings.semantic_checker_api_key,
             timeout_seconds=settings.semantic_checker_timeout_seconds,
+            request_queue=request_queue,
         )
 
     async def match(
@@ -82,7 +89,10 @@ class OpenAICompatibleKeyEntityMatcher:
             image_bytes=image_bytes,
             key_entities=key_entities,
         )
-        response_json = await asyncio.to_thread(self._request_json, payload)
+        response_json = await self._request_queue.run(
+            operation="key_entity_match",
+            call=lambda: self._request_json(payload),
+        )
         raw_output = _extract_message_text(response_json)
         matched_id, confidence, reason = _parse_match_output(
             text=raw_output,
@@ -188,6 +198,11 @@ class OpenAICompatibleKeyEntityMatcher:
             raise KeyEntityMatchError(
                 f"key entity matcher request failed reason={exc.reason}"
             ) from exc
+        except TimeoutError as exc:
+            raise KeyEntityMatchError(
+                "key entity matcher request timed out "
+                f"timeout_seconds={self._timeout_seconds}"
+            ) from exc
         except json.JSONDecodeError as exc:
             raise KeyEntityMatchError("key entity matcher returned invalid JSON") from exc
 
@@ -228,15 +243,14 @@ async def identify_key_entity(
         )
 
     try:
-        frame_matches = await asyncio.gather(
-            *[
-                matcher.match(
+        frame_matches = []
+        for _, sample in usable_samples:
+            frame_matches.append(
+                await matcher.match(
                     image_bytes=sample.crop_bytes,  # type: ignore[arg-type]
                     key_entities=key_entities,
                 )
-                for _, sample in usable_samples
-            ]
-        )
+            )
     except KeyEntityMatchError as exc:
         return KeyEntityIdentification(
             key_entity_id=None,
