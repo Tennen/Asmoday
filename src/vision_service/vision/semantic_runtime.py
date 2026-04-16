@@ -99,3 +99,5 @@ async def observe_semantic_fallback_safely(
         )
     except SemanticCheckError as exc:
         return None, str(exc)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"semantic checker failed unexpectedly: {exc}"

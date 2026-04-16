@@ -23,8 +23,8 @@ from vision_service.vision.roi import ROIOccupancyDetector, ROIOccupancyObservat
 from vision_service.vision.key_entity_matcher import (
     KeyEntityMatcher,
     OpenAICompatibleKeyEntityMatcher,
-    identify_key_entity,
 )
+from vision_service.vision.key_entity_runtime import identify_transition_key_entity
 from vision_service.vision.semantic import (
     OpenAICompatibleSemanticChecker,
     SemanticChecker,
@@ -399,9 +399,9 @@ class RuleVisionWorker:
         *,
         context: TransitionContext,
     ) -> None:
-        key_entity_identification = await identify_key_entity(
-            evidence_samples=transition.evidence_samples,
-            key_entities=self._rule.key_entities,
+        key_entity_identification = await identify_transition_key_entity(
+            transition=transition,
+            rule=self._rule,
             matcher=self._key_entity_matcher,
         )
         try:

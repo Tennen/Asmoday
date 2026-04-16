@@ -467,3 +467,50 @@ async def test_emit_transition_includes_key_entity_vote_result() -> None:
     assert emitted_events[0].key_entity_id == 101
     assert emitted_events[0].metadata["key_entity_match"]["winner_id"] == 101
     assert emitted_events[0].metadata["key_entity_match"]["status"] == "matched"
+
+
+@pytest.mark.asyncio
+async def test_emit_transition_skips_key_entity_without_yolo_crop() -> None:
+    emitted_events = []
+
+    async def emit_rule_event(event):  # noqa: ANN001, ANN202
+        emitted_events.append(event)
+        return "vision-evt-3"
+
+    class FailingKeyEntityMatcher:
+        async def match(self, *, image_bytes: bytes, key_entities):  # noqa: ANN001, ANN201
+            raise AssertionError("key entity matcher should not be called")
+
+    worker = build_worker(
+        entity_value="dog",
+        emit_rule_event=emit_rule_event,
+        key_entities=[KeyEntityReference(id=101, description="橘猫")],
+        key_entity_matcher=FailingKeyEntityMatcher(),
+    )
+    transition = DwellTransition(
+        status="threshold_met",
+        observed_at=datetime(2026, 4, 12, 8, 0, tzinfo=UTC),
+        dwell_seconds=5,
+        track_id=7,
+        evidence_samples=(
+            EvidenceSample(
+                captured_at=datetime(2026, 4, 12, 7, 59, 58, tzinfo=UTC),
+                image_bytes=b"start",
+            ),
+        ),
+    )
+
+    await worker._emit_transition(
+        transition,
+        context=TransitionContext(
+            primary_entity=EntityDescriptor(
+                kind="label",
+                value="dog",
+                display_name="Dog",
+            ),
+        ),
+    )
+
+    assert len(emitted_events) == 1
+    assert emitted_events[0].key_entity_id is None
+    assert "key_entity_match" not in emitted_events[0].metadata

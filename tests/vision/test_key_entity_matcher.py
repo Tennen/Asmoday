@@ -69,6 +69,31 @@ async def test_identify_key_entity_matches_evidence_samples_sequentially() -> No
     assert matcher.image_bytes == [b"crop-start", b"crop-middle", b"crop-end"]
 
 
+@pytest.mark.asyncio
+async def test_identify_key_entity_returns_degraded_result_for_unexpected_error() -> None:
+    class FailingMatcher:
+        async def match(self, *, image_bytes: bytes, key_entities):  # noqa: ANN001, ANN201
+            raise RuntimeError("model server crashed")
+
+    result = await identify_key_entity(
+        evidence_samples=[
+            EvidenceSample(
+                captured_at=datetime(2026, 4, 16, 8, 0, tzinfo=UTC),
+                image_bytes=b"frame",
+                crop_bytes=b"crop",
+            ),
+        ],
+        key_entities=[KeyEntityReference(id="pet-1", description="orange cat")],
+        matcher=FailingMatcher(),
+    )
+
+    assert result is not None
+    assert result.key_entity_id is None
+    assert result.metadata["status"] == "failed"
+    assert result.error_message is not None
+    assert "model server crashed" in result.error_message
+
+
 def test_key_entity_matcher_wraps_socket_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

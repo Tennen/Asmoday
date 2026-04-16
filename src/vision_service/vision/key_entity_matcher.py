@@ -260,6 +260,16 @@ async def identify_key_entity(
             },
             error_message=str(exc),
         )
+    except Exception as exc:  # noqa: BLE001
+        message = f"key entity matcher failed unexpectedly: {exc}"
+        return KeyEntityIdentification(
+            key_entity_id=None,
+            metadata={
+                "status": "failed",
+                "reason": message,
+            },
+            error_message=message,
+        )
 
     winner_id, votes = _aggregate_frame_matches(
         key_entities=key_entities,

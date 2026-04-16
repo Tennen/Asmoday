@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+import numpy as np
 import pytest
 
 from vision_service.contracts import (
@@ -9,8 +10,15 @@ from vision_service.contracts import (
     VisionRule,
     ZoneRect,
 )
+from vision_service.settings import Settings
+from vision_service.vision.entities import (
+    ProcessedFrame,
+    TransitionContext,
+    ZoneObservation,
+)
 from vision_service.vision.semantic import SemanticCheckResult
 from vision_service.vision.semantic_fallback import SemanticFallbackTracker
+from vision_service.vision.semantic_runtime import observe_semantic_fallback_safely
 from vision_service.vision.roi.models import ROIOccupancyObservation
 
 
@@ -182,3 +190,34 @@ async def test_semantic_fallback_is_suppressed_after_yolo_threshold_observed() -
     )
 
     assert completed is None
+
+
+@pytest.mark.asyncio
+async def test_semantic_runtime_returns_error_for_unexpected_checker_failure() -> None:
+    class FailingSemanticFallback:
+        async def observe(self, **kwargs):  # noqa: ANN003, ANN201
+            raise RuntimeError("model server crashed")
+
+    transition, error = await observe_semantic_fallback_safely(
+        rule=build_rule(),
+        settings=Settings(),
+        semantic_fallback=FailingSemanticFallback(),  # type: ignore[arg-type]
+        frame=np.zeros((4, 4, 3), dtype=np.uint8),
+        observed_at=datetime(2026, 4, 13, 8, 12, tzinfo=UTC),
+        processed=ProcessedFrame(
+            transition=None,
+            context=TransitionContext(),
+            zone_observation=ZoneObservation(
+                visible_tracks={},
+                track_entities={},
+                track_confidences={},
+                entities=(),
+            ),
+            roi_observation=None,
+        ),
+        yolo_threshold_observed=False,
+    )
+
+    assert transition is None
+    assert error is not None
+    assert "model server crashed" in error

@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     semantic_checker_base_url: str | None = None
     semantic_checker_model_name: str | None = None
     semantic_checker_api_key: str | None = None
-    semantic_checker_timeout_seconds: float = Field(default=5.0, gt=0)
+    semantic_checker_timeout_seconds: float = Field(default=20.0, gt=0)
     semantic_checker_consecutive_yolo_failures: int = Field(default=6, ge=1)
     semantic_checker_retry_cooldown_seconds: float = Field(default=2.0, gt=0)
     semantic_checker_max_attempts_per_episode: int = Field(default=3, ge=1)

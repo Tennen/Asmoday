@@ -70,6 +70,8 @@ Recommended workflow:
   Optional OpenAI-compatible local VLM endpoint. When unset, ROI/VLM semantic fallback stays disabled and rule-level `key_entities` matching cannot run.
 - `VISION_SERVICE_SEMANTIC_CHECKER_MODEL_NAME`
   Model name sent to the semantic checker `chat/completions` request.
+- `VISION_SERVICE_SEMANTIC_CHECKER_TIMEOUT_SECONDS`
+  Timeout for local VLM `chat/completions` calls. Defaults to `20`.
 - `VISION_SERVICE_SEMANTIC_CHECKER_CONSECUTIVE_YOLO_FAILURES`
   Consecutive in-zone YOLO misses required before the service asks the VLM to re-check an occupied ROI.
 - `VISION_SERVICE_RTSP_TRANSPORT`
@@ -121,7 +123,7 @@ The service may asynchronously send:
 - When ROI remains occupied but YOLO keeps missing and the semantic checker is configured, the worker can ask the local VLM to re-check cropped zone keyframes using the rule's entity plus optional behavior text.
 - `threshold_met` is emitted once after a dwell episode ends and exceeded the configured threshold.
 - Evidence is sent as `start`, `middle`, and `end` raw JPEG frames plus structured YOLO detections over the WebSocket session.
-- When a rule includes `key_entities`, the worker crops the triggering tracked entity from those three evidence samples, runs one-to-many VLM matching, aggregates the per-frame votes, and includes the winning `key_entity_id` in the emitted event when available.
+- When a YOLO dwell event includes `key_entities`, the worker crops the triggering tracked entity from those three evidence samples, runs one-to-many VLM matching, aggregates the per-frame votes, and includes the winning `key_entity_id` in the emitted event when available. ROI-only semantic fallback does not run key entity matching.
 
 ## Validation
 

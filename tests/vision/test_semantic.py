@@ -12,6 +12,7 @@ from vision_service.contracts import (
     VisionRule,
     ZoneRect,
 )
+from vision_service.settings import Settings
 from vision_service.vision.key_entity_matcher import OpenAICompatibleKeyEntityMatcher
 from vision_service.vision.model_queue import LocalModelRequestQueue
 from vision_service.vision.semantic import (
@@ -48,6 +49,10 @@ def test_parse_semantic_verdict_accepts_verbose_output() -> None:
     assert parse_semantic_verdict("结论：疑似有") == "疑似有"
     assert parse_semantic_verdict("无法确定，画面太糊") == "无法确定"
     assert parse_semantic_verdict("有。") == "有"
+
+
+def test_semantic_checker_default_timeout_allows_local_vlm_latency() -> None:
+    assert Settings().semantic_checker_timeout_seconds == 20.0
 
 
 @pytest.mark.asyncio
