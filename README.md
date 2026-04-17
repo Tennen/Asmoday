@@ -124,7 +124,7 @@ The service may asynchronously send:
 - `threshold_met` is emitted once after a dwell episode ends and exceeded the configured threshold.
 - Evidence is sent as `start`, `middle`, and `end` raw JPEG frames plus structured YOLO detections over the WebSocket session.
 - ROI/VLM fallback crops the configured zone only for the semantic checker input; emitted evidence remains full-frame raw JPEG so Gateway/Admin can show where the episode occurred.
-- When a YOLO dwell event includes `key_entities`, the worker crops the triggering tracked entity from those three evidence samples, runs one-to-many VLM matching, aggregates the per-frame votes, and includes the winning `key_entity_id` in the emitted event when available. ROI-only semantic fallback does not run key entity matching.
+- When a YOLO dwell event includes `key_entities`, the worker crops the triggering tracked entity from those three evidence samples, runs pairwise VLM matching against each candidate, aggregates the per-frame votes, and includes the winning `key_entity_id` in the emitted event when available. ROI-only semantic fallback does not run key entity matching.
 
 ## Validation
 

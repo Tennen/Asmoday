@@ -402,7 +402,16 @@ async def test_emit_transition_includes_key_entity_vote_result() -> None:
         async def match(self, *, image_bytes: bytes, key_entities):  # noqa: ANN001, ANN201
             self.calls += 1
             assert image_bytes.startswith(b"crop-")
-            assert len(key_entities) == 2
+            assert len(key_entities) == 1
+            if key_entities[0].id != 101:
+                return KeyEntityFrameMatch(
+                    key_entity_id=None,
+                    confidence=0.12,
+                    reason="不匹配",
+                    raw_output='{"key_entity_id":null}',
+                    model_name="mini-vlm",
+                    checked_at=datetime(2026, 4, 12, 8, 0, tzinfo=UTC),
+                )
             return KeyEntityFrameMatch(
                 key_entity_id=101,
                 confidence=0.88,
@@ -463,7 +472,7 @@ async def test_emit_transition_includes_key_entity_vote_result() -> None:
         ),
     )
 
-    assert matcher.calls == 3
+    assert matcher.calls == 6
     assert emitted_events[0].key_entity_id == 101
     assert emitted_events[0].metadata["key_entity_match"]["winner_id"] == 101
     assert emitted_events[0].metadata["key_entity_match"]["status"] == "matched"

@@ -9,14 +9,15 @@ from vision_service.contracts.callbacks import EvidencePhase
 from vision_service.contracts.control import KeyEntityId, KeyEntityReference
 from vision_service.runtime.dwell import EvidenceSample
 from vision_service.settings import Settings
+from vision_service.vision.key_entity_response import (
+    KeyEntityMatchError,
+    extract_message_text,
+    parse_match_output,
+)
 from vision_service.vision.model_queue import (
     LocalModelRequestQueue,
     get_local_model_request_queue,
 )
-
-
-class KeyEntityMatchError(RuntimeError):
-    pass
 
 
 @dataclass(slots=True, frozen=True)
@@ -34,6 +35,13 @@ class KeyEntityIdentification:
     key_entity_id: KeyEntityId | None
     metadata: dict[str, object]
     error_message: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class KeyEntityCandidateFrameMatch:
+    phase: EvidencePhase
+    candidate_id: KeyEntityId
+    match: KeyEntityFrameMatch
 
 
 class KeyEntityMatcher(Protocol):
@@ -93,8 +101,8 @@ class OpenAICompatibleKeyEntityMatcher:
             operation="key_entity_match",
             call=lambda: self._request_json(payload),
         )
-        raw_output = _extract_message_text(response_json)
-        matched_id, confidence, reason = _parse_match_output(
+        raw_output = extract_message_text(response_json)
+        matched_id, confidence, reason = parse_match_output(
             text=raw_output,
             key_entities=key_entities,
         )
@@ -117,9 +125,12 @@ class OpenAICompatibleKeyEntityMatcher:
             {
                 "type": "text",
                 "text": (
-                    "你是监控事件关键实体匹配器。第一张图是待识别的单个实体裁切图。"
+                    "你是监控事件关键实体匹配器。第一张图是由 YOLO 检测框裁切出的"
+                    "待识别单个实体。"
                     "后续会给出候选关键实体，每个候选至少有参考图或文字描述。"
-                    "请只在候选 id 中选择一个最匹配的 id，或者返回 null。"
+                    "候选可能只有一个；不要因为只有一个候选就强行选择。"
+                    "只有当待识别实体与候选视觉特征或描述明确一致时，才返回该候选 id；"
+                    "无法确认同一实体时返回 null。"
                     "只输出 JSON："
                     '{"key_entity_id": <候选id或null>, "confidence": <0到1的小数>, '
                     '"reason": "<不超过20字>"}。'
@@ -243,14 +254,23 @@ async def identify_key_entity(
         )
 
     try:
-        frame_matches = []
-        for _, sample in usable_samples:
-            frame_matches.append(
-                await matcher.match(
-                    image_bytes=sample.crop_bytes,  # type: ignore[arg-type]
-                    key_entities=key_entities,
+        candidate_matches: list[KeyEntityCandidateFrameMatch] = []
+        for phase, sample in usable_samples:
+            for key_entity in key_entities:
+                candidate_matches.append(
+                    KeyEntityCandidateFrameMatch(
+                        phase=phase,
+                        candidate_id=key_entity.id,
+                        match=await matcher.match(
+                            image_bytes=sample.crop_bytes,  # type: ignore[arg-type]
+                            key_entities=[key_entity],
+                        ),
+                    )
                 )
-            )
+        winner_id, votes, ambiguous = _aggregate_candidate_matches(
+            key_entities=key_entities,
+            candidate_matches=candidate_matches,
+        )
     except KeyEntityMatchError as exc:
         return KeyEntityIdentification(
             key_entity_id=None,
@@ -271,18 +291,23 @@ async def identify_key_entity(
             error_message=message,
         )
 
-    winner_id, votes = _aggregate_frame_matches(
-        key_entities=key_entities,
-        frame_matches=frame_matches,
+    status = (
+        "matched"
+        if winner_id is not None
+        else "ambiguous"
+        if ambiguous
+        else "no_match"
     )
     metadata = {
-        "status": "matched" if winner_id is not None else "no_match",
+        "status": status,
         "winner_id": winner_id,
-        "model": frame_matches[0].model_name,
-        "frames": _build_frame_metadata(
+        "model": candidate_matches[0].match.model_name,
+        "strategy": "pairwise_candidate_vote",
+        "input_source": "yolo_detection_crop",
+        "input_region": "yolo_detection_box",
+        "frames": _build_candidate_frame_metadata(
             phased_samples=phased_samples,
-            usable_samples=usable_samples,
-            frame_matches=frame_matches,
+            candidate_matches=candidate_matches,
         ),
         "votes": votes,
     }
@@ -292,22 +317,28 @@ async def identify_key_entity(
     )
 
 
-def _aggregate_frame_matches(
+def _aggregate_candidate_matches(
     *,
     key_entities: Sequence[KeyEntityReference],
-    frame_matches: Sequence[KeyEntityFrameMatch],
-) -> tuple[KeyEntityId | None, list[dict[str, object]]]:
+    candidate_matches: Sequence[KeyEntityCandidateFrameMatch],
+) -> tuple[KeyEntityId | None, list[dict[str, object]], bool]:
     candidate_by_key = {str(entity.id): entity.id for entity in key_entities}
-    candidate_order = {str(entity.id): index for index, entity in enumerate(key_entities)}
     vote_counts = {key: 0 for key in candidate_by_key}
     confidence_totals = {key: 0.0 for key in candidate_by_key}
 
-    for match in frame_matches:
-        if match.key_entity_id is None:
+    for candidate_match in candidate_matches:
+        matched_id = candidate_match.match.key_entity_id
+        if matched_id is None:
             continue
-        candidate_key = str(match.key_entity_id)
+        candidate_key = str(candidate_match.candidate_id)
+        matched_key = str(matched_id)
+        if matched_key != candidate_key:
+            raise KeyEntityMatchError(
+                "key entity matcher returned an id outside the paired candidate: "
+                f"candidate={candidate_match.candidate_id!r} matched={matched_id!r}"
+            )
         vote_counts[candidate_key] += 1
-        confidence_totals[candidate_key] += match.confidence or 0.0
+        confidence_totals[candidate_key] += candidate_match.match.confidence or 0.0
 
     vote_rows = [
         {
@@ -319,33 +350,40 @@ def _aggregate_frame_matches(
         if vote_counts[key] > 0
     ]
     if not vote_rows:
-        return None, vote_rows
+        return None, vote_rows, False
 
-    winner_key = min(
+    ranked_keys = sorted(
         (key for key in candidate_by_key if vote_counts[key] > 0),
         key=lambda key: (
             -vote_counts[key],
             -confidence_totals[key],
-            candidate_order[key],
         ),
     )
-    return candidate_by_key[winner_key], vote_rows
+    winner_key = ranked_keys[0]
+    if len(ranked_keys) > 1:
+        runner_up_key = ranked_keys[1]
+        if (
+            vote_counts[winner_key] == vote_counts[runner_up_key]
+            and abs(confidence_totals[winner_key] - confidence_totals[runner_up_key])
+            < 0.000001
+        ):
+            return None, vote_rows, True
+    return candidate_by_key[winner_key], vote_rows, False
 
 
-def _build_frame_metadata(
+def _build_candidate_frame_metadata(
     *,
     phased_samples: Sequence[tuple[EvidencePhase, EvidenceSample]],
-    usable_samples: Sequence[tuple[EvidencePhase, EvidenceSample]],
-    frame_matches: Sequence[KeyEntityFrameMatch],
+    candidate_matches: Sequence[KeyEntityCandidateFrameMatch],
 ) -> list[dict[str, object]]:
-    match_by_phase = {
-        phase: match
-        for (phase, _), match in zip(usable_samples, frame_matches)
-    }
+    matches_by_phase: dict[EvidencePhase, list[KeyEntityCandidateFrameMatch]] = {}
+    for candidate_match in candidate_matches:
+        matches_by_phase.setdefault(candidate_match.phase, []).append(candidate_match)
+
     frames: list[dict[str, object]] = []
     for phase, sample in phased_samples:
-        match = match_by_phase.get(phase)
-        if match is None:
+        phase_matches = matches_by_phase.get(phase, [])
+        if not phase_matches:
             frames.append(
                 {
                     "phase": phase,
@@ -358,123 +396,30 @@ def _build_frame_metadata(
                 }
             )
             continue
+        matched = any(match.match.key_entity_id is not None for match in phase_matches)
         frames.append(
             {
                 "phase": phase,
-                "status": "matched" if match.key_entity_id is not None else "no_match",
-                "key_entity_id": match.key_entity_id,
-                "confidence": match.confidence,
-                "reason": match.reason,
-                "checked_at": match.checked_at.isoformat(),
-                "model": match.model_name,
+                "status": "matched" if matched else "no_match",
+                "input_source": "yolo_detection_crop",
+                "input_region": "yolo_detection_box",
+                "candidates": [
+                    {
+                        "candidate_id": candidate_match.candidate_id,
+                        "status": (
+                            "matched"
+                            if candidate_match.match.key_entity_id is not None
+                            else "no_match"
+                        ),
+                        "key_entity_id": candidate_match.match.key_entity_id,
+                        "confidence": candidate_match.match.confidence,
+                        "reason": candidate_match.match.reason,
+                        "checked_at": candidate_match.match.checked_at.isoformat(),
+                        "model": candidate_match.match.model_name,
+                        "raw_output": candidate_match.match.raw_output,
+                    }
+                    for candidate_match in phase_matches
+                ],
             }
         )
     return frames
-
-
-def _parse_match_output(
-    *,
-    text: str,
-    key_entities: Sequence[KeyEntityReference],
-) -> tuple[KeyEntityId | None, float | None, str | None]:
-    parsed = _try_parse_json_object(text)
-    candidate_by_key = {str(entity.id): entity.id for entity in key_entities}
-
-    if parsed is None:
-        normalized_id = _normalize_matched_id(
-            value=text.strip(),
-            candidate_by_key=candidate_by_key,
-        )
-        return normalized_id, None, None
-
-    matched_id = _normalize_matched_id(
-        value=parsed.get("key_entity_id"),
-        candidate_by_key=candidate_by_key,
-    )
-    confidence = _parse_confidence(parsed.get("confidence"))
-    reason = parsed.get("reason")
-    if not isinstance(reason, str) or not reason.strip():
-        reason = None
-    else:
-        reason = reason.strip()
-    return matched_id, confidence, reason
-
-
-def _normalize_matched_id(
-    *,
-    value: object,
-    candidate_by_key: dict[str, KeyEntityId],
-) -> KeyEntityId | None:
-    if value is None:
-        return None
-    normalized = str(value).strip()
-    if not normalized or normalized.lower() in {"null", "none"}:
-        return None
-    if normalized not in candidate_by_key:
-        raise KeyEntityMatchError(
-            f"key entity matcher returned unsupported id: {value!r}"
-        )
-    return candidate_by_key[normalized]
-
-
-def _parse_confidence(value: object) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        confidence = float(value)
-        return max(0.0, min(1.0, confidence))
-    return None
-
-
-def _try_parse_json_object(text: str) -> dict[str, Any] | None:
-    stripped = text.strip()
-    if not stripped:
-        raise KeyEntityMatchError("key entity matcher response content is empty")
-
-    candidate_json = stripped
-    if candidate_json.startswith("```"):
-        lines = [
-            line
-            for line in candidate_json.splitlines()
-            if not line.strip().startswith("```")
-        ]
-        candidate_json = "\n".join(lines).strip()
-    start = candidate_json.find("{")
-    end = candidate_json.rfind("}")
-    if start == -1 or end <= start:
-        return None
-    try:
-        parsed = json.loads(candidate_json[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise KeyEntityMatchError(
-            f"key entity matcher returned invalid JSON payload: {text!r}"
-        ) from exc
-    if not isinstance(parsed, dict):
-        raise KeyEntityMatchError("key entity matcher JSON payload must be an object")
-    return parsed
-
-
-def _extract_message_text(response_json: dict[str, Any]) -> str:
-    choices = response_json.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise KeyEntityMatchError("key entity matcher response has no choices")
-    message = choices[0].get("message")
-    if not isinstance(message, dict):
-        raise KeyEntityMatchError("key entity matcher response is missing message")
-    content = message.get("content")
-    if isinstance(content, str):
-        text = content.strip()
-    elif isinstance(content, list):
-        text_parts: list[str] = []
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            text_value = item.get("text")
-            if isinstance(text_value, str) and text_value.strip():
-                text_parts.append(text_value.strip())
-        text = "\n".join(text_parts).strip()
-    else:
-        text = ""
-    if not text:
-        raise KeyEntityMatchError("key entity matcher response content is empty")
-    return text

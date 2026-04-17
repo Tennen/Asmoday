@@ -157,13 +157,13 @@ Sent once after a dwell episode ends and the completed stay exceeded the configu
 `rule_events` entity semantics:
 
 - `entity_value` remains the backward-compatible primary entity identifier.
-- `key_entity_id` is optional. When present, it echoes the winning `rules[].key_entities[].id` selected from aggregated VLM matching over the event's `start` / `middle` / `end` evidence samples.
+- `key_entity_id` is optional. When present, it echoes the winning `rules[].key_entities[].id` selected from aggregated pairwise VLM matching over the event's `start` / `middle` / `end` evidence samples.
 - `entities` is optional, but when present it carries the complete set of recognized entities currently inside the configured zone for that emitted event.
 - When Gateway syncs a rule whose `entity_selector.value == ""`, Vision Service must treat that rule as "no class filter" and must not gate detections by entity class before dwell aggregation.
 - For wildcard rules, events must include every in-zone recognized entity in `entities`.
 - Gateway uses `entities` for persisted history display and entity-based filtering in Admin, so Vision Service should keep the array stable, deduplicated by `kind + value`, and ordered by its primary/most relevant entity first.
 - `metadata.decision` may carry source and scoring details such as `source`, `confidence_score`, `confidence_breakdown`, and semantic checker verdicts when ROI/VLM fallback was used.
-- `metadata.key_entity_match` may carry multi-frame vote details such as frame-level match outputs, vote counts, final winner, model name, and explicit failure / skipped reasons when key-entity enrichment was requested but could not complete.
+- `metadata.key_entity_match` may carry multi-frame vote details such as frame-level pairwise match outputs, raw model output, VLM input source, vote counts, final winner, model name, and explicit failure / skipped reasons when key-entity enrichment was requested but could not complete.
 
 ### `evidence`
 
