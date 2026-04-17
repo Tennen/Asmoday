@@ -47,7 +47,8 @@ async def observe_semantic_fallback(
     if semantic_fallback is None:
         return None
 
-    image_bytes: bytes | None = None
+    evidence_image_bytes: bytes | None = None
+    semantic_image_bytes: bytes | None = None
     if (
         processed.roi_observation is not None
         and processed.roi_observation.presence_active
@@ -57,15 +58,20 @@ async def observe_semantic_fallback(
             frame=frame,
             max_side_px=settings.roi_max_side_px,
         )
-        image_bytes = encode_frame(
+        semantic_image_bytes = encode_frame(
             frame=zone_crop,
+            jpeg_quality=settings.jpeg_quality,
+        )
+        evidence_image_bytes = encode_frame(
+            frame=frame,
             jpeg_quality=settings.jpeg_quality,
         )
 
     return await semantic_fallback.observe(
         observed_at=observed_at,
         roi_observation=processed.roi_observation,
-        image_bytes=image_bytes,
+        evidence_image_bytes=evidence_image_bytes,
+        semantic_image_bytes=semantic_image_bytes,
         yolo_confidence=max(
             processed.zone_observation.track_confidences.values(),
             default=None,

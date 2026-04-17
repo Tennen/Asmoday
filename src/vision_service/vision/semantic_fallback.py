@@ -90,7 +90,8 @@ class SemanticFallbackTracker:
         *,
         observed_at: datetime,
         roi_observation: ROIOccupancyObservation | None,
-        image_bytes: bytes | None,
+        evidence_image_bytes: bytes | None,
+        semantic_image_bytes: bytes | None,
         yolo_confidence: float | None,
         yolo_threshold_observed: bool,
     ) -> SemanticFallbackTransition | None:
@@ -122,7 +123,7 @@ class SemanticFallbackTracker:
         self._maybe_store_sample(
             episode=episode,
             observed_at=observed_at,
-            image_bytes=image_bytes,
+            image_bytes=evidence_image_bytes,
         )
 
         if yolo_confidence is not None:
@@ -138,7 +139,7 @@ class SemanticFallbackTracker:
             return None
         if episode.semantic_result is not None:
             return None
-        if image_bytes is None:
+        if semantic_image_bytes is None:
             return None
         if episode.consecutive_yolo_failures < self._consecutive_yolo_failures:
             return None
@@ -155,7 +156,10 @@ class SemanticFallbackTracker:
 
         episode.last_checked_at = observed_at
         episode.attempts += 1
-        result = await self._checker.check(image_bytes=image_bytes, rule=self._rule)
+        result = await self._checker.check(
+            image_bytes=semantic_image_bytes,
+            rule=self._rule,
+        )
         episode.semantic_results.append(result)
         if result.verdict in POSITIVE_SEMANTIC_VERDICTS:
             episode.positive_votes += 1
@@ -335,16 +339,24 @@ def build_semantic_event_metadata(
 
 
 def semantic_evidence_metadata(
+    rule: VisionRule,
     transition: SemanticFallbackTransition,
 ) -> dict[str, object]:
     return {
         "annotations": {
             "image_kind": "raw",
-            "source": "roi.zone_crop",
-            "region": "configured_zone",
+            "coordinate_space": "normalized_xywh",
+            "source": "camera.frame",
+            "detections": [],
+            "semantic_roi": {
+                "source": "configured_zone",
+                "box": rule.zone.model_dump(mode="json"),
+            },
         },
         "semantic_check": {
             "verdict": transition.semantic_result.verdict,
             "confidence_score": transition.confidence.score,
+            "input_source": "roi.zone_crop",
+            "input_region": "configured_zone",
         },
     }

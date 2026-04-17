@@ -85,7 +85,7 @@ def build_semantic_rule_event(
                 phase=phase,
                 captured_at=sample.captured_at,
                 image_bytes=sample.image_bytes,
-                metadata=semantic_evidence_metadata(transition),
+                metadata=semantic_evidence_metadata(rule, transition),
             )
             for phase, sample in zip(phases, transition.evidence_samples)
         )

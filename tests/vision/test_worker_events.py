@@ -198,4 +198,9 @@ def test_build_semantic_rule_event_includes_semantic_metadata() -> None:
     assert event.metadata["decision"]["source"] == "roi_vlm_fallback"
     assert event.metadata["decision"]["semantic_check"]["verdict"] == "疑似有"
     assert event.metadata["decision"]["semantic_check"]["positive_votes"] == 2
-    assert event.evidence[0].metadata["annotations"]["source"] == "roi.zone_crop"
+    assert event.evidence[0].image_bytes == b"start"
+    assert event.evidence[0].metadata["annotations"]["source"] == "camera.frame"
+    assert (
+        event.evidence[0].metadata["semantic_check"]["input_source"]
+        == "roi.zone_crop"
+    )

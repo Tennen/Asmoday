@@ -219,6 +219,7 @@ Sent after the matching `rule_events` message when the completed dwell event inc
 - `metadata.annotations.coordinate_space` is fixed to normalized top-left origin coordinates in `[0,1]` space using `box.{x,y,width,height}`.
 - Each detection should carry `display_name` and may optionally carry `kind`, `value`, `confidence`, and `track_id`.
 - If Vision Service uses Ultralytics' own renderer to generate evidence, it should still keep detection ordering stable and may optionally include the same detection list for downstream structured consumers.
+- If ROI/VLM fallback confirms an event, `image_base64` must remain a full-frame raw capture. The configured-zone crop is only a semantic-check model input and should be described in metadata rather than replacing upstream evidence.
 
 ### `error`
 
