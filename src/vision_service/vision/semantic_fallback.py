@@ -85,6 +85,22 @@ class SemanticFallbackTracker:
     def active(self) -> bool:
         return self._episode is not None
 
+    def should_capture_evidence_sample(
+        self,
+        *,
+        observed_at: datetime,
+        roi_observation: ROIOccupancyObservation | None,
+    ) -> bool:
+        if roi_observation is None or not roi_observation.presence_active:
+            return False
+
+        episode = self._episode
+        if episode is None or episode.last_sampled_at is None:
+            return True
+        return (
+            observed_at - episode.last_sampled_at
+        ).total_seconds() >= self._sample_interval_seconds
+
     async def observe(
         self,
         *,

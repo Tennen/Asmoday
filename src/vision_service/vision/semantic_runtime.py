@@ -43,12 +43,13 @@ async def observe_semantic_fallback(
     observed_at: datetime,
     processed: ProcessedFrame,
     yolo_threshold_observed: bool,
-) -> SemanticFallbackTransition | None:
+) -> tuple[SemanticFallbackTransition | None, str | None]:
     if semantic_fallback is None:
-        return None
+        return None, None
 
     evidence_image_bytes: bytes | None = None
     semantic_image_bytes: bytes | None = None
+    evidence_error: str | None = None
     if (
         processed.roi_observation is not None
         and processed.roi_observation.presence_active
@@ -62,21 +63,34 @@ async def observe_semantic_fallback(
             frame=zone_crop,
             jpeg_quality=settings.jpeg_quality,
         )
-        evidence_image_bytes = encode_frame(
-            frame=frame,
-            jpeg_quality=settings.jpeg_quality,
-        )
+        if semantic_fallback.should_capture_evidence_sample(
+            observed_at=observed_at,
+            roi_observation=processed.roi_observation,
+        ):
+            try:
+                evidence_image_bytes = encode_frame(
+                    frame=frame,
+                    jpeg_quality=settings.jpeg_quality,
+                )
+            except Exception as exc:  # noqa: BLE001
+                evidence_error = (
+                    "failed to encode full-frame semantic fallback evidence: "
+                    f"{exc}"
+                )
 
-    return await semantic_fallback.observe(
-        observed_at=observed_at,
-        roi_observation=processed.roi_observation,
-        evidence_image_bytes=evidence_image_bytes,
-        semantic_image_bytes=semantic_image_bytes,
-        yolo_confidence=max(
-            processed.zone_observation.track_confidences.values(),
-            default=None,
+    return (
+        await semantic_fallback.observe(
+            observed_at=observed_at,
+            roi_observation=processed.roi_observation,
+            evidence_image_bytes=evidence_image_bytes,
+            semantic_image_bytes=semantic_image_bytes,
+            yolo_confidence=max(
+                processed.zone_observation.track_confidences.values(),
+                default=None,
+            ),
+            yolo_threshold_observed=yolo_threshold_observed,
         ),
-        yolo_threshold_observed=yolo_threshold_observed,
+        evidence_error,
     )
 
 
@@ -91,19 +105,16 @@ async def observe_semantic_fallback_safely(
     yolo_threshold_observed: bool,
 ) -> tuple[SemanticFallbackTransition | None, str | None]:
     try:
-        return (
-            await observe_semantic_fallback(
-                rule=rule,
-                settings=settings,
-                semantic_fallback=semantic_fallback,
-                frame=frame,
-                observed_at=observed_at,
-                processed=processed,
-                yolo_threshold_observed=yolo_threshold_observed,
-            ),
-            None,
+        return await observe_semantic_fallback(
+            rule=rule,
+            settings=settings,
+            semantic_fallback=semantic_fallback,
+            frame=frame,
+            observed_at=observed_at,
+            processed=processed,
+            yolo_threshold_observed=yolo_threshold_observed,
         )
     except SemanticCheckError as exc:
         return None, str(exc)
     except Exception as exc:  # noqa: BLE001
-        return None, f"semantic checker failed unexpectedly: {exc}"
+        return None, f"semantic fallback failed unexpectedly: {exc}"

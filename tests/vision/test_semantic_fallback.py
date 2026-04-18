@@ -146,6 +146,44 @@ async def test_semantic_fallback_uses_crop_for_vlm_but_stores_raw_evidence() -> 
 
 
 @pytest.mark.asyncio
+async def test_semantic_fallback_requests_full_frame_evidence_only_on_sample_interval() -> None:
+    checker = FakeChecker(["无法确定"])
+    tracker = SemanticFallbackTracker(
+        rule=build_rule(),
+        threshold_seconds=5,
+        sample_interval_seconds=10.0,
+        max_samples=9,
+        consecutive_yolo_failures=1,
+        retry_cooldown_seconds=1.0,
+        max_attempts_per_episode=1,
+        checker=checker,
+    )
+    start = datetime(2026, 4, 13, 8, 1, tzinfo=UTC)
+
+    assert tracker.should_capture_evidence_sample(
+        observed_at=start,
+        roi_observation=occupied_roi(start),
+    )
+    await tracker.observe(
+        observed_at=start,
+        roi_observation=occupied_roi(start),
+        evidence_image_bytes=b"raw-0",
+        semantic_image_bytes=b"crop-0",
+        yolo_confidence=None,
+        yolo_threshold_observed=False,
+    )
+
+    assert not tracker.should_capture_evidence_sample(
+        observed_at=start + timedelta(seconds=1),
+        roi_observation=occupied_roi(start + timedelta(seconds=1)),
+    )
+    assert tracker.should_capture_evidence_sample(
+        observed_at=start + timedelta(seconds=10),
+        roi_observation=occupied_roi(start + timedelta(seconds=10)),
+    )
+
+
+@pytest.mark.asyncio
 async def test_semantic_fallback_rejects_single_positive_vote_episode() -> None:
     checker = FakeChecker(["有", "无法确定", "无法确定"])
     tracker = SemanticFallbackTracker(
@@ -247,6 +285,9 @@ async def test_semantic_runtime_passes_full_frame_evidence_and_zone_crop_vlm_inp
         def __init__(self) -> None:
             self.observed: dict[str, object] | None = None
 
+        def should_capture_evidence_sample(self, **kwargs):  # noqa: ANN003, ANN201
+            return True
+
         async def observe(self, **kwargs):  # noqa: ANN003, ANN201
             self.observed = kwargs
             return None
@@ -281,6 +322,57 @@ async def test_semantic_runtime_passes_full_frame_evidence_and_zone_crop_vlm_inp
     assert error is None
     assert fallback.observed is not None
     assert fallback.observed["evidence_image_bytes"] == b"10x20"
+    assert fallback.observed["semantic_image_bytes"] == b"2x4"
+
+
+@pytest.mark.asyncio
+async def test_semantic_runtime_still_checks_vlm_when_full_frame_evidence_encode_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CapturingSemanticFallback:
+        def __init__(self) -> None:
+            self.observed: dict[str, object] | None = None
+
+        def should_capture_evidence_sample(self, **kwargs):  # noqa: ANN003, ANN201
+            return True
+
+        async def observe(self, **kwargs):  # noqa: ANN003, ANN201
+            self.observed = kwargs
+            return None
+
+    def fake_encode_frame(*, frame: np.ndarray, jpeg_quality: int) -> bytes:
+        if frame.shape[:2] == (10, 20):
+            raise RuntimeError("full frame encode failed")
+        return f"{frame.shape[0]}x{frame.shape[1]}".encode()
+
+    fallback = CapturingSemanticFallback()
+    monkeypatch.setattr(semantic_runtime, "encode_frame", fake_encode_frame)
+
+    transition, error = await semantic_runtime.observe_semantic_fallback_safely(
+        rule=build_rule(),
+        settings=Settings(),
+        semantic_fallback=fallback,  # type: ignore[arg-type]
+        frame=np.zeros((10, 20, 3), dtype=np.uint8),
+        observed_at=datetime(2026, 4, 13, 8, 12, tzinfo=UTC),
+        processed=ProcessedFrame(
+            transition=None,
+            context=TransitionContext(),
+            zone_observation=ZoneObservation(
+                visible_tracks={},
+                track_entities={},
+                track_confidences={},
+                entities=(),
+            ),
+            roi_observation=occupied_roi(datetime(2026, 4, 13, 8, 12, tzinfo=UTC)),
+        ),
+        yolo_threshold_observed=False,
+    )
+
+    assert transition is None
+    assert error is not None
+    assert "full-frame semantic fallback evidence" in error
+    assert fallback.observed is not None
+    assert fallback.observed["evidence_image_bytes"] is None
     assert fallback.observed["semantic_image_bytes"] == b"2x4"
 
 

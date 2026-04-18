@@ -272,7 +272,7 @@ class RuleVisionWorker:
                 if semantic_error is not None:
                     self._last_error = semantic_error
                     logger.warning(
-                        "semantic checker failed rule_id=%s camera_device_id=%s error=%s",
+                        "semantic fallback degraded rule_id=%s camera_device_id=%s error=%s",
                         self._rule.id,
                         self._rule.camera.device_id,
                         semantic_error,
