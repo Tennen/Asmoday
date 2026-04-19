@@ -183,7 +183,6 @@ class RuleVisionWorker:
         )
         dwell_tracker = RuleDwellTracker(
             threshold_seconds=self._rule.stay_threshold_seconds,
-            sample_interval_seconds=self._settings.frame_sample_interval_seconds,
             max_samples=self._settings.evidence_buffer_max_samples,
         )
         semantic_fallback = build_semantic_fallback_tracker(

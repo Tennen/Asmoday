@@ -159,6 +159,11 @@ def test_build_yolo_rule_event_includes_confidence_metadata() -> None:
     assert event.metadata["key_entity_match"]["winner_id"] == 101
     assert event.metadata["decision"]["confidence_score"] >= 0.8
     assert len(event.evidence) == 3
+    assert [capture.phase for capture in event.evidence] == [
+        "start",
+        "sample_002",
+        "end",
+    ]
     assert event.evidence[0].metadata["annotations"]["image_kind"] == "raw"
     assert event.evidence[0].metadata["annotations"]["detections"][0]["track_id"] == "7"
 

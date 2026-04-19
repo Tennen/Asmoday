@@ -25,7 +25,6 @@ def build_semantic_fallback_tracker(
     return SemanticFallbackTracker(
         rule=rule,
         threshold_seconds=rule.stay_threshold_seconds,
-        sample_interval_seconds=settings.frame_sample_interval_seconds,
         max_samples=settings.evidence_buffer_max_samples,
         consecutive_yolo_failures=settings.semantic_checker_consecutive_yolo_failures,
         retry_cooldown_seconds=settings.semantic_checker_retry_cooldown_seconds,

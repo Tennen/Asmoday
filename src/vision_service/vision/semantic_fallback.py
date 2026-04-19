@@ -3,6 +3,7 @@ from datetime import datetime
 
 from vision_service.contracts import VisionRule
 from vision_service.runtime.dwell import EvidenceSample
+from vision_service.runtime.evidence import EVIDENCE_SAMPLES_PER_THRESHOLD
 from vision_service.vision.confidence import (
     ConfidenceAssessment,
     roi_signal_confidence,
@@ -61,7 +62,6 @@ class SemanticFallbackTracker:
         *,
         rule: VisionRule,
         threshold_seconds: int,
-        sample_interval_seconds: float,
         max_samples: int,
         consecutive_yolo_failures: int,
         retry_cooldown_seconds: float,
@@ -70,7 +70,10 @@ class SemanticFallbackTracker:
     ) -> None:
         self._rule = rule.model_copy(deep=True)
         self._threshold_seconds = threshold_seconds
-        self._sample_interval_seconds = sample_interval_seconds
+        self._evidence_sample_interval_seconds = max(
+            threshold_seconds / float(EVIDENCE_SAMPLES_PER_THRESHOLD),
+            0.001,
+        )
         self._max_samples = max_samples
         self._consecutive_yolo_failures = consecutive_yolo_failures
         self._retry_cooldown_seconds = retry_cooldown_seconds
@@ -95,11 +98,19 @@ class SemanticFallbackTracker:
             return False
 
         episode = self._episode
+        if episode is not None and len(episode.samples) >= self._max_samples:
+            return False
         if episode is None or episode.last_sampled_at is None:
+            return True
+        if (
+            len(episode.samples) < EVIDENCE_SAMPLES_PER_THRESHOLD
+            and (observed_at - episode.entered_at).total_seconds()
+            >= self._threshold_seconds
+        ):
             return True
         return (
             observed_at - episode.last_sampled_at
-        ).total_seconds() >= self._sample_interval_seconds
+        ).total_seconds() >= self._evidence_sample_interval_seconds
 
     async def observe(
         self,
@@ -227,7 +238,7 @@ class SemanticFallbackTracker:
             confidence=confidence,
             consecutive_yolo_failures=episode.consecutive_yolo_failures,
             yolo_support_confidence=episode.best_yolo_confidence,
-            evidence_samples=self._select_evidence_samples(episode),
+            evidence_samples=tuple(episode.samples),
         )
 
     def _maybe_store_sample(
@@ -239,12 +250,20 @@ class SemanticFallbackTracker:
     ) -> None:
         if image_bytes is None:
             return
+        if len(episode.samples) >= self._max_samples:
+            return
+        force_minimum_samples = (
+            len(episode.samples) < EVIDENCE_SAMPLES_PER_THRESHOLD
+            and (observed_at - episode.entered_at).total_seconds()
+            >= self._threshold_seconds
+        )
         if (
-            episode.last_sampled_at is not None
+            not force_minimum_samples
+            and episode.last_sampled_at is not None
             and (
                 observed_at - episode.last_sampled_at
             ).total_seconds()
-            < self._sample_interval_seconds
+            < self._evidence_sample_interval_seconds
         ):
             return
 
@@ -254,11 +273,6 @@ class SemanticFallbackTracker:
                 image_bytes=image_bytes,
             )
         )
-        if len(episode.samples) > self._max_samples:
-            episode.samples = self._rebalance_samples(
-                samples=episode.samples,
-                max_samples=self._max_samples,
-            )
         episode.last_sampled_at = observed_at
 
     def _effective_retry_cooldown_seconds(self) -> float:
@@ -267,42 +281,6 @@ class SemanticFallbackTracker:
             1.0,
         )
         return max(self._retry_cooldown_seconds, threshold_spread_seconds)
-
-    @staticmethod
-    def _rebalance_samples(
-        *,
-        samples: list[EvidenceSample],
-        max_samples: int,
-    ) -> list[EvidenceSample]:
-        if len(samples) <= max_samples:
-            return samples
-        if max_samples <= 1:
-            return [samples[-1]]
-
-        last_index = len(samples) - 1
-        step = last_index / (max_samples - 1)
-        chosen_indices: list[int] = []
-        previous_index = -1
-        for slot in range(max_samples):
-            raw_index = round(slot * step)
-            min_index = previous_index + 1
-            max_index = last_index - (max_samples - slot - 1)
-            index = min(max(raw_index, min_index), max_index)
-            chosen_indices.append(index)
-            previous_index = index
-        return [samples[index] for index in chosen_indices]
-
-    @staticmethod
-    def _select_evidence_samples(
-        episode: _SemanticEpisode,
-    ) -> tuple[EvidenceSample, ...]:
-        if not episode.samples:
-            return ()
-
-        start = episode.samples[0]
-        middle = episode.samples[len(episode.samples) // 2]
-        end = episode.samples[-1]
-        return (start, middle, end)
 
 
 def _is_stronger_roi_observation(

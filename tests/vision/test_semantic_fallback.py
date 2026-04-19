@@ -73,7 +73,6 @@ async def test_semantic_fallback_emits_transition_for_confirmed_roi_episode() ->
     tracker = SemanticFallbackTracker(
         rule=build_rule(),
         threshold_seconds=5,
-        sample_interval_seconds=1.0,
         max_samples=9,
         consecutive_yolo_failures=2,
         retry_cooldown_seconds=1.0,
@@ -111,7 +110,6 @@ async def test_semantic_fallback_uses_crop_for_vlm_but_stores_raw_evidence() -> 
     tracker = SemanticFallbackTracker(
         rule=build_rule(),
         threshold_seconds=1,
-        sample_interval_seconds=0.0,
         max_samples=9,
         consecutive_yolo_failures=1,
         retry_cooldown_seconds=1.0,
@@ -151,7 +149,6 @@ async def test_semantic_fallback_requests_full_frame_evidence_only_on_sample_int
     tracker = SemanticFallbackTracker(
         rule=build_rule(),
         threshold_seconds=5,
-        sample_interval_seconds=10.0,
         max_samples=9,
         consecutive_yolo_failures=1,
         retry_cooldown_seconds=1.0,
@@ -178,8 +175,8 @@ async def test_semantic_fallback_requests_full_frame_evidence_only_on_sample_int
         roi_observation=occupied_roi(start + timedelta(seconds=1)),
     )
     assert tracker.should_capture_evidence_sample(
-        observed_at=start + timedelta(seconds=10),
-        roi_observation=occupied_roi(start + timedelta(seconds=10)),
+        observed_at=start + timedelta(seconds=2),
+        roi_observation=occupied_roi(start + timedelta(seconds=2)),
     )
 
 
@@ -189,7 +186,6 @@ async def test_semantic_fallback_rejects_single_positive_vote_episode() -> None:
     tracker = SemanticFallbackTracker(
         rule=build_rule(),
         threshold_seconds=5,
-        sample_interval_seconds=1.0,
         max_samples=9,
         consecutive_yolo_failures=2,
         retry_cooldown_seconds=1.0,
@@ -221,7 +217,6 @@ async def test_semantic_fallback_spreads_checks_across_threshold_window() -> Non
     tracker = SemanticFallbackTracker(
         rule=build_rule(),
         threshold_seconds=6,
-        sample_interval_seconds=1.0,
         max_samples=9,
         consecutive_yolo_failures=2,
         retry_cooldown_seconds=0.5,
@@ -251,7 +246,6 @@ async def test_semantic_fallback_is_suppressed_after_yolo_threshold_observed() -
     tracker = SemanticFallbackTracker(
         rule=build_rule(),
         threshold_seconds=5,
-        sample_interval_seconds=1.0,
         max_samples=9,
         consecutive_yolo_failures=1,
         retry_cooldown_seconds=1.0,

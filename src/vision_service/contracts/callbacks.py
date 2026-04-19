@@ -9,7 +9,7 @@ from vision_service.contracts.control import KeyEntityId
 
 ServiceStatus = Literal["unknown", "healthy", "degraded", "unhealthy", "stopped"]
 RuleEventStatus = Literal["threshold_met", "cleared"]
-EvidencePhase = Literal["start", "middle", "end"]
+EvidencePhase = str
 
 
 class RuntimeStatusPayload(BaseModel):
@@ -67,7 +67,7 @@ class EvidenceCapture(BaseModel):
     event_id: str = Field(min_length=1)
     rule_id: str | None = None
     camera_device_id: str | None = None
-    phase: EvidencePhase
+    phase: EvidencePhase = Field(min_length=1)
     captured_at: datetime
     content_type: str | None = "image/jpeg"
     image_base64: str = Field(min_length=1)

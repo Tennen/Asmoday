@@ -48,7 +48,7 @@ def test_build_evidence_callback_payload_includes_annotation_metadata() -> None:
         dwell_seconds=5,
         evidence=(
             EventEvidence(
-                phase="start",
+                phase="sample_002",
                 captured_at=captured_at,
                 image_bytes=b"image",
                 metadata={
@@ -70,7 +70,8 @@ def test_build_evidence_callback_payload_includes_annotation_metadata() -> None:
 
     assert payload is not None
     capture = payload.captures[0]
-    assert capture.capture_id == "vision-evt-1:start"
+    assert capture.capture_id == "vision-evt-1:sample_002"
+    assert capture.phase == "sample_002"
     assert capture.image_base64 == "aW1hZ2U="
     assert capture.metadata == {
         "annotations": {

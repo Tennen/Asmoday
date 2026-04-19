@@ -8,6 +8,7 @@ from urllib import error, request
 from vision_service.contracts.callbacks import EvidencePhase
 from vision_service.contracts.control import KeyEntityId, KeyEntityReference
 from vision_service.runtime.dwell import EvidenceSample
+from vision_service.runtime.evidence import phased_evidence_items
 from vision_service.settings import Settings
 from vision_service.vision.key_entity_response import (
     KeyEntityMatchError,
@@ -237,8 +238,7 @@ async def identify_key_entity(
             error_message=message,
         )
 
-    phases: tuple[EvidencePhase, ...] = ("start", "middle", "end")
-    phased_samples = list(zip(phases, evidence_samples))
+    phased_samples = phased_evidence_items(evidence_samples)
     usable_samples = [
         (phase, sample)
         for phase, sample in phased_samples

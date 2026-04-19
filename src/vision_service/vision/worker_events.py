@@ -1,5 +1,6 @@
 from vision_service.contracts import EntityDescriptor, VisionRule
 from vision_service.runtime.dwell import DwellTransition
+from vision_service.runtime.evidence import phased_evidence_items
 from vision_service.runtime.events import EventEvidence, RuleEvent
 from vision_service.vision.entities import TransitionContext, evidence_metadata
 from vision_service.vision.key_entity_matcher import KeyEntityIdentification
@@ -22,7 +23,6 @@ def build_yolo_rule_event(
 ) -> RuleEvent:
     evidence: tuple[EventEvidence, ...] = ()
     if transition.status == "threshold_met" and transition.evidence_samples:
-        phases = ("start", "middle", "end")
         evidence = tuple(
             EventEvidence(
                 phase=phase,
@@ -30,7 +30,7 @@ def build_yolo_rule_event(
                 image_bytes=sample.image_bytes,
                 metadata=evidence_metadata(sample),
             )
-            for phase, sample in zip(phases, transition.evidence_samples)
+            for phase, sample in phased_evidence_items(transition.evidence_samples)
         )
 
     decision_confidence = score_yolo_event(
@@ -79,7 +79,6 @@ def build_semantic_rule_event(
 ) -> RuleEvent:
     evidence: tuple[EventEvidence, ...] = ()
     if transition.evidence_samples:
-        phases = ("start", "middle", "end")
         evidence = tuple(
             EventEvidence(
                 phase=phase,
@@ -87,7 +86,7 @@ def build_semantic_rule_event(
                 image_bytes=sample.image_bytes,
                 metadata=semantic_evidence_metadata(rule, transition),
             )
-            for phase, sample in zip(phases, transition.evidence_samples)
+            for phase, sample in phased_evidence_items(transition.evidence_samples)
         )
 
     return RuleEvent(

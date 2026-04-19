@@ -54,7 +54,6 @@ class Settings(BaseSettings):
         ),
     )
 
-    frame_sample_interval_seconds: float = Field(default=0.25, gt=0)
     frame_failure_backoff_seconds: float = Field(default=1.0, gt=0)
     idle_sleep_seconds: float = Field(default=0.05, gt=0)
     tracker_lost_track_buffer: int = Field(default=30, ge=1)

@@ -122,9 +122,9 @@ The service may asynchronously send:
 - With `VISION_SERVICE_ROI_ENABLED=true` and `VISION_SERVICE_YOLO_RUN_MODE=roi_triggered`, ROI stays resident and shared YOLO inference is requested only while ROI occupancy is active.
 - When ROI remains occupied but YOLO keeps missing and the semantic checker is configured, the worker can ask the local VLM to re-check cropped zone keyframes using the rule's entity plus optional behavior text.
 - `threshold_met` is emitted once after a dwell episode ends and exceeded the configured threshold.
-- Evidence is sent as `start`, `middle`, and `end` raw JPEG frames plus structured YOLO detections over the WebSocket session.
+- Evidence is sampled at `stay_threshold_seconds / 3` intervals and sent as raw JPEG frames plus structured YOLO detections over the WebSocket session. The first retained capture uses phase `start`, the final retained capture uses `end`, and any intermediate captures use numbered phases such as `sample_002`.
 - ROI/VLM fallback crops the configured zone only for the semantic checker input; emitted evidence remains full-frame raw JPEG so Gateway/Admin can show where the episode occurred.
-- When a YOLO dwell event includes `key_entities`, the worker crops the triggering tracked entity from those three evidence samples, runs pairwise VLM matching against each candidate, aggregates the per-frame votes, and includes the winning `key_entity_id` in the emitted event when available. ROI-only semantic fallback does not run key entity matching.
+- When a YOLO dwell event includes `key_entities`, the worker crops the triggering tracked entity from the event evidence samples, runs pairwise VLM matching against each candidate, aggregates the per-frame votes, and includes the winning `key_entity_id` in the emitted event when available. ROI-only semantic fallback does not run key entity matching.
 
 ## Validation
 

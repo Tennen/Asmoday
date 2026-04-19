@@ -70,6 +70,9 @@ async def test_identify_key_entity_matches_evidence_samples_sequentially() -> No
     assert matcher.max_active_requests == 1
     assert matcher.image_bytes == [b"crop-start", b"crop-middle", b"crop-end"]
     assert matcher.candidate_ids == ["pet-1", "pet-1", "pet-1"]
+    assert [
+        frame["phase"] for frame in result.metadata["frames"]  # type: ignore[index]
+    ] == ["start", "sample_002", "end"]
 
 
 @pytest.mark.asyncio

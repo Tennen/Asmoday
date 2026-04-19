@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Literal, Mapping
 
 from vision_service.contracts.callbacks import EvidenceDetection
+from vision_service.runtime.evidence import EVIDENCE_SAMPLES_PER_THRESHOLD
 
 
 TransitionStatus = Literal["threshold_met"]
@@ -48,11 +49,13 @@ class RuleDwellTracker:
         self,
         *,
         threshold_seconds: int,
-        sample_interval_seconds: float,
         max_samples: int = 32,
     ) -> None:
         self._threshold_seconds = threshold_seconds
-        self._sample_interval_seconds = sample_interval_seconds
+        self._evidence_sample_interval_seconds = max(
+            threshold_seconds / float(EVIDENCE_SAMPLES_PER_THRESHOLD),
+            0.001,
+        )
         self._max_samples = max_samples
         self._tracks: dict[int, TrackEpisode] = {}
         self._active = False
@@ -102,7 +105,10 @@ class RuleDwellTracker:
                 episode=episode,
                 observed_at=observed_at,
                 evidence=evidence,
-                force=crossed_threshold,
+                force=(
+                    crossed_threshold
+                    and len(episode.samples) < EVIDENCE_SAMPLES_PER_THRESHOLD
+                ),
             )
             if crossed_threshold:
                 episode.threshold_met = True
@@ -146,13 +152,15 @@ class RuleDwellTracker:
     ) -> None:
         if evidence.image_bytes is None:
             return
+        if len(episode.samples) >= self._max_samples:
+            return
         if (
             not force
             and episode.last_sampled_at is not None
             and (
                 observed_at - episode.last_sampled_at
             ).total_seconds()
-            < self._sample_interval_seconds
+            < self._evidence_sample_interval_seconds
         ):
             return
 
@@ -164,11 +172,6 @@ class RuleDwellTracker:
                 crop_bytes=evidence.crop_bytes,
             )
         )
-        if len(episode.samples) > self._max_samples:
-            episode.samples = self._rebalance_samples(
-                samples=episode.samples,
-                max_samples=self._max_samples,
-            )
         episode.last_sampled_at = observed_at
 
     def _finalize_active_transition(
@@ -190,11 +193,7 @@ class RuleDwellTracker:
                 else self._last_active_dwell_seconds
             ),
             track_id=episode.track_id if episode is not None else self._active_track_id,
-            evidence_samples=(
-                self._select_evidence_samples(episode)
-                if episode is not None
-                else ()
-            ),
+            evidence_samples=tuple(episode.samples) if episode is not None else (),
         )
         self._active = False
         self._active_track_id = None
@@ -223,39 +222,3 @@ class RuleDwellTracker:
             completed_tracks,
             key=lambda episode: (episode.entered_at, episode.track_id),
         )
-
-    @staticmethod
-    def _rebalance_samples(
-        *,
-        samples: list[EvidenceSample],
-        max_samples: int,
-    ) -> list[EvidenceSample]:
-        if len(samples) <= max_samples:
-            return samples
-        if max_samples <= 1:
-            return [samples[-1]]
-
-        last_index = len(samples) - 1
-        step = last_index / (max_samples - 1)
-        chosen_indices: list[int] = []
-        previous_index = -1
-        for slot in range(max_samples):
-            raw_index = round(slot * step)
-            min_index = previous_index + 1
-            max_index = last_index - (max_samples - slot - 1)
-            index = min(max(raw_index, min_index), max_index)
-            chosen_indices.append(index)
-            previous_index = index
-        return [samples[index] for index in chosen_indices]
-
-    @staticmethod
-    def _select_evidence_samples(
-        episode: TrackEpisode,
-    ) -> tuple[EvidenceSample, ...]:
-        if not episode.samples:
-            return ()
-
-        start = episode.samples[0]
-        middle = episode.samples[len(episode.samples) // 2]
-        end = episode.samples[-1]
-        return (start, middle, end)

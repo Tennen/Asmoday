@@ -157,7 +157,7 @@ Sent once after a dwell episode ends and the completed stay exceeded the configu
 `rule_events` entity semantics:
 
 - `entity_value` remains the backward-compatible primary entity identifier.
-- `key_entity_id` is optional. When present, it echoes the winning `rules[].key_entities[].id` selected from aggregated pairwise VLM matching over the event's `start` / `middle` / `end` evidence samples.
+- `key_entity_id` is optional. When present, it echoes the winning `rules[].key_entities[].id` selected from aggregated pairwise VLM matching over the event's evidence samples.
 - `entities` is optional, but when present it carries the complete set of recognized entities currently inside the configured zone for that emitted event.
 - When Gateway syncs a rule whose `entity_selector.value == ""`, Vision Service must treat that rule as "no class filter" and must not gate detections by entity class before dwell aggregation.
 - For wildcard rules, events must include every in-zone recognized entity in `entities`.
@@ -213,6 +213,8 @@ Sent after the matching `rule_events` message when the completed dwell event inc
 
 `evidence` annotation semantics:
 
+- Vision Service samples evidence at `rules[].stay_threshold_seconds / 3` intervals while the episode remains active, up to its configured evidence buffer limit.
+- `phase` is a stable capture label within the event. The first retained capture uses `start`, the final retained capture uses `end`, and intermediate captures use numbered phases such as `sample_002`.
 - Vision Service may send either a pre-rendered annotated image or a raw capture plus structured detections.
 - `metadata.annotations.image_kind = "annotated"` means `image_base64` already contains rendered boxes and labels. Gateway/Admin should display that image as-is and must not draw another overlay from the same detection set.
 - `metadata.annotations.image_kind = "raw"` means `image_base64` is an unannotated capture. Gateway/Admin may draw the overlay from `metadata.annotations.detections`.
